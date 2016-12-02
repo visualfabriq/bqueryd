@@ -1,0 +1,2 @@
+# bqueryd
+Distributed Bquery
