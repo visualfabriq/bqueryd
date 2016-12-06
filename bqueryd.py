@@ -2,47 +2,50 @@
 
 import sys
 import os
+import time
 import zmq
 import config
 import logging
 logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
                 level=logging.DEBUG)
 import bquery
-import random, time
-
+import binascii
+import traceback
 
 def msg_factory(msg):
-    if msg.get('msg_type') == 'calc_message':
-        m = CalcMessage(msg)
-    elif msg.get('msg_type') == 'rpc_message':
-        m =  RPCMessage(msg)
-    else:
-        m = Message(msg)
-    return m.validate()
+    msg_mapping = {None: Message, 'calc': CalcMessage, 'rpc': RPCMessage, 'error': ErrorMessage}
+    msg_class = msg_mapping.get(msg.get('msg_type'))
+    return msg_class(msg)
 
 class MalformedMessage(Exception):
     pass
 
 class Message(dict):
     def __init__(self, datadict):
+        if datadict is None:
+            datadict = {}
         for k,v in datadict.items():
             self[k] = v
         self['payload'] = datadict.get('payload')
         self['version'] = datadict.get('version', 1)
-    def validate(self):
-        return self        
 
 class CalcMessage(Message):
-    def validate(self):
-        if not self.get('filename'):
-            raise MalformedMessage('CalcMessage needs a filename')
-        return self
+    def __init__(self, msg):
+        super(CalcMessage, self).__init__(msg)
+        self['msg_type'] = 'calc'
 
 class RPCMessage(Message):
     def __init__(self, datadict):
         super(RPCMessage, self).__init__(datadict)
-        self['msg_type'] = 'rpc_message'        
+        self['msg_type'] = 'rpc'
 
+class ErrorMessage(Message):
+    @staticmethod
+    def create(error):
+        return ErrorMessage({'payload':error})
+    def __init__(self, msg):
+        super(ErrorMessage, self).__init__(msg)
+        self['msg_type'] = 'error'
 
 class BaseNode(object):
     def __init__(self):
@@ -70,18 +73,29 @@ class WorkerNode(BaseNode):
         while running:
             msg = self.receive.recv_json()
             msg = msg_factory(msg)
-            tmp = handle(msg)
+            logging.debug('Worker Msg received %s' % msg)
+            try:
+                tmp = self.handle(msg)
+            except Exception, e:
+                tmp = ErrorMessage(msg)
+                tmp['payload'] = traceback.format_exc()
             self.results.send_json(tmp)
 
     def handle(self, msg):
-        if not isinstance(msg, CalcMessage):
-            logging.error('We can only handle CalcMessage types') 
-        filename = msg.get('filename')
-        # Do some bcolz schizzle here... :-)
-        # For now let's fake it with something trivial
-        buf = [random.randint(0,100) for x in range(1000000)]
+        kwargs = msg.get('kwargs', {})
+        filename = kwargs.get('filename')
+        groupby_cols = kwargs.get('groupby_cols')
+        agg_list = kwargs.get('agg_list')
+        rootdir = os.path.join(self.data_dir, filename)
+        if not os.path.exists(rootdir):
+            return ErrorMessage.create('Path %s does not exist' % rootdir)
+        ct = bquery.ctable(rootdir=rootdir)
+        result_ctable = ct.groupby(groupby_cols, agg_list)
+        result_dataframe = result_ctable.todataframe()
+        buf = result_dataframe.to_msgpack()
+        msg['result'] = buf
 
-        return {'version':1, 'type':'fakeresult', 'filename':filename, 'result':buf}
+        return msg
 
 
 class QNode(BaseNode):
@@ -104,14 +118,16 @@ class QNode(BaseNode):
         logging.debug('Sink on %s' % sink_address)
 
         self.sink_msg_count = 0
+        self.rpc_map_ids = {} # keyed on msg_ids, values are the sockets and start times of the rpc calls
+        self.rpc_map_soc = {} # keyed on socket, values are the msg_ids
 
-    def handle(self, msg):
-        pass
+    def handle_sink(self, msg):
+        logging.debug('QNode Sink received %s' % msg)
 
     def go(self):
         poller = zmq.Poller()
         poller.register(self.sink, zmq.POLLIN)
-        poller.register(self.rpc, zmq.POLLIN)
+        poller.register(self.rpc, zmq.POLLIN|zmq.POLLOUT)
 
         logging.debug('QNode started')
 
@@ -122,23 +138,36 @@ class QNode(BaseNode):
                 socks = dict(poller.poll())
             except KeyboardInterrupt:
                 logging.debug('Stopped from keyboard')
-                running = False
+                self.running = False
 
             if socks.get(self.sink) == zmq.POLLIN:
                 msg = self.sink.recv_json()
-                self.handle(msg)
+                self.handle_sink(msg)
                 self.sink_msg_count += 1
 
             if socks.get(self.rpc) == zmq.POLLIN:
                 msg = self.rpc.recv_json()
-                logging.debug('Msg received %s' % msg)
+                msg_id = binascii.hexlify(os.urandom(8))
+                self.rpc_map_ids[msg_id] = {'socket': self.rpc, 'rcv_time':time.time()}
+                self.rpc_map_soc[self.rpc] = msg_id
+                msg['token'] = msg_id
+                logging.debug('QNode Msg received %s' % msg)
                 msg = msg_factory(msg)                
-                reply = self.handle_rpc(msg)
-                logging.debug('Msg handled %s' % reply)
-                self.rpc.send_json(reply)
+                self.handle_rpc(msg)
+            if socks.get(self.rpc) == zmq.POLLOUT:
+                msg_id = self.rpc_map_soc.get(self.rpc)
+                reply = self.rpc_map_ids.get(msg_id).get('result')
+                if reply:
+                    logging.debug('QNode Msg handled %s' % reply)
+                    self.rpc.send_json(reply)
+
         logging.debug('Stopping QNode')
 
     def handle_rpc(self, msg):
+        # Every msg needs a token, otherwise we don't know wo the reply goes to
+        if 'token' not in msg:
+            raise Exception('Every msg needs a token')
+
         # What kind of rpc calls can be made?
         data = {}
         if msg['payload'] == 'info':
@@ -146,11 +175,24 @@ class QNode(BaseNode):
                     'data_dir': self.data_dir,
                     'data_files': self.data_files
                    }
-        if msg['payload'] == 'kill':
+        elif msg['payload'] == 'kill':
             self.running = False
-        return RPCMessage(data)
+        elif msg['payload'] == 'calc':
+            data = self.handle_calc(msg)
+        else:
+            data = {'payload': "Sorry, I don't understand you"}
 
-class BQueryD(object):
+        tmp = self.rpc_map_ids.get(msg['token'])
+        if not tmp:
+            logging.debug('Error: RPC token %s not found in rpc_map_ids' % msg['token'])
+            return
+        tmp['result'] = RPCMessage(data)
+
+    def handle_calc(self, msg):
+        # Send a calc message to the workers on the ventilatior for the number of shards for this filename
+        self.ventilator.send_json(msg)
+
+class RPC(object):
 
     def __init__(self):
         self.context = zmq.Context()
@@ -166,6 +208,8 @@ class BQueryD(object):
                 tmp['args'] = args
             if kwargs:
                 tmp['kwargs'] = kwargs
+            print RPCMessage(tmp)
+
             self.qnode.send_json(RPCMessage(tmp))
             rep = self.qnode.recv_json()
             return rep
@@ -178,7 +222,3 @@ if __name__ == '__main__':
     elif '-q' in sys.argv: # Qnode
         q = QNode()
         q.go()
-    else:
-        logging.debug('Testing connection')
-        bd = BQueryD()
-        print bd.info()

@@ -11,6 +11,7 @@ SINK_PORT = 14336
 RPC_PORT = 14337
 
 DATA_FILE_EXTENSION = '.bcolz'
+SHARD_DATA_FILE_EXTENSION = '.bcolzs'
 
 try:
     if os.path.exists('config_local.py'):
