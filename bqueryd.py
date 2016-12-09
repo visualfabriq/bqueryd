@@ -11,6 +11,7 @@ import bquery
 import binascii
 import traceback
 import json
+import cPickle
 
 def msg_factory(msg):
     msg_mapping = {'calc': CalcMessage, 'rpc': RPCMessage, 'error': ErrorMessage,
@@ -30,6 +31,12 @@ class Message(dict):
         self['payload'] = datadict.get('payload')
         self['version'] = datadict.get('version', 1)
         self['msg_type'] = self.msg_type
+    def add_as_binary(self, key, value):
+        self[key] = cPickle.dumps(value).encode('base64')
+    def get_from_binary(self, key):
+        buf = self.get(key)
+        if not buf: return
+        return cPickle.loads(buf.decode('base64'))
 
 class WorkerRegisterMessage(Message):
     msg_type = 'worker_register'
@@ -75,7 +82,7 @@ class WorkerNode(BaseNode):
         while self.running:
             msg = self.receive.recv_json()
             msg = msg_factory(msg)
-            logging.debug('Worker Msg received %s' % msg)
+            logging.debug('Worker %s Msg received %s' % (self.worker_id, msg))
             try:
                 tmp = self.handle(msg)
             except Exception, e:
@@ -85,8 +92,12 @@ class WorkerNode(BaseNode):
         logging.debug('Stopping Worker %s' % self.worker_id)
 
     def handle(self, msg):
-        kwargs = msg.get('kwargs', {})
-        args = msg.get('args', [])
+        params = msg.get('params', {})
+        if params:
+            tmp = params.decode('base64')
+            params = cPickle.loads(tmp)
+        kwargs = params.get('kwargs', {})
+        args = params.get('args', [])
 
         if msg.get('payload') == 'kill':
             self.running = False
@@ -104,11 +115,11 @@ class WorkerNode(BaseNode):
                 msg['payload'] = 'Path %s does not exist' % rootdir
                 return ErrorMessage(msg)
             ct = bquery.ctable(rootdir=rootdir)
-            result_ctable = ct.groupby(*args)
-            result_dataframe = result_ctable.todataframe()
-            buf = result_dataframe.to_msgpack()
 
-        msg['result'] = buf
+            result_ctable = ct.groupby(*args)
+            buf = result_ctable.todataframe()
+
+        msg.add_as_binary('result', buf)
         return msg
 
 
@@ -136,7 +147,7 @@ class QNode(BaseNode):
         self.worker_map = {}  # maintain a list of connected workers TODO get rid of unresponsive ones...
 
     def handle_sink(self, msg):
-        logging.debug('QNode Sink received %s' % msg)
+        logging.debug('QNode Sink received %s' % msg.get('token', '?'))
         if isinstance(msg, WorkerRegisterMessage):
             self.worker_map[msg['worker_id']] = {'last_seen': time.time()}
             return
@@ -180,7 +191,7 @@ class QNode(BaseNode):
                         msg_id = binascii.unhexlify(msg.get('token'))
                         tmp = [msg_id, '', json.dumps(msg)]
                         self.rpc.send_multipart(tmp)
-                        logging.debug('QNode Msg handled %s' % msg)
+                        logging.debug('QNode Msg handled %s' % msg.get('token', '?'))
 
             except KeyboardInterrupt:
                 logging.debug('Stopped from keyboard')
@@ -205,24 +216,25 @@ class QNode(BaseNode):
         # What kind of rpc calls can be made?
         data = {}
         if msg['payload'] == 'info':
-            data = {'sink_msg_count': self.sink_msg_count,
+            data ={'sink_msg_count': self.sink_msg_count,
                     'data_dir': self.data_dir,
                     'data_files': self.data_files,
                     'workers': self.worker_map
-                   }
+                  }
         elif msg['payload'] == 'kill':
             # And reply to our caller, otherwise they will just hang
-            self.rpc.send_json(RPCMessage({'payload': 'OK'}))
+            msg.add_as_binary('result', 'OK')
+            self.rpc_results.append(msg)
             self.kill()
         elif msg['payload'] in ('groupby', 'where_terms', 'sleep'):
             # Send a calc message to the workers on the ventilator for the number of shards for this filename
             # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
             self.ventilator.send_json(msg)
         else:
-            data = {'payload': "Sorry, I don't understand you"}
+            data = "Sorry, I don't understand you"
 
         if data:
-            msg.update(data)
+            msg.add_as_binary('result', data)
             self.rpc_results.append(msg)
 
 class RPC(object):
@@ -236,16 +248,18 @@ class RPC(object):
 
     def __getattr__(self, name):
         def _rpc(*args, **kwargs):
-            tmp = {'payload':name}
+            params = {}
             if args:
-                tmp['args'] = args
+                params['args'] = args
             if kwargs:
-                tmp['kwargs'] = kwargs
-            print RPCMessage(tmp)
-
-            self.qnode.send_json(RPCMessage(tmp))
-            rep = self.qnode.recv_json()
-            return rep
+                params['kwargs'] = kwargs
+            # We do not want string args to be converted into unicode by the JSON machinery
+            # bquery ctable does not like col names to be unicode for example
+            msg = RPCMessage({'payload':name})
+            msg.add_as_binary('params', params)
+            self.qnode.send_json(msg)
+            rep = msg_factory(self.qnode.recv_json())
+            return rep.get_from_binary('result')
         return _rpc
  
 if __name__ == '__main__':
