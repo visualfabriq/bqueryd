@@ -80,6 +80,7 @@ class WorkerNode(BaseNode):
 
         self.running = True
         while self.running:
+            time.sleep(0.0001) # give the system a breather to stop CPU usage being pegged at 100%
             msg = self.receive.recv_json()
             msg = msg_factory(msg)
             logging.debug('Worker %s Msg received %s' % (self.worker_id, msg))
@@ -147,15 +148,15 @@ class QNode(BaseNode):
         self.worker_map = {}  # maintain a list of connected workers TODO get rid of unresponsive ones...
 
     def handle_sink(self, msg):
-        logging.debug('QNode Sink received %s' % msg.get('token', '?'))
         if isinstance(msg, WorkerRegisterMessage):
             self.worker_map[msg['worker_id']] = {'last_seen': time.time()}
+            logging.debug('QNode Worker registered %s' % msg.get('worker_id'))
             return
 
         # Every msg needs a token, otherwise we don't know who the reply goes to
         if 'token' not in msg:
             raise Exception('Every msg needs a token')
-
+        logging.debug('QNode Sink received %s' % msg.get('token', '?'))
         self.rpc_results.append(msg)
 
     def go(self):
@@ -168,6 +169,7 @@ class QNode(BaseNode):
         socks = {}
         self.running = True
         while self.running:
+            time.sleep(0.0001) # give the system a breather to stop CPU usage being pegged at 100%
             try:
                 socks = dict(self.poller.poll())
 
@@ -248,6 +250,7 @@ class RPC(object):
 
     def __getattr__(self, name):
         def _rpc(*args, **kwargs):
+            start_time = time.time()
             params = {}
             if args:
                 params['args'] = args
@@ -259,7 +262,10 @@ class RPC(object):
             msg.add_as_binary('params', params)
             self.qnode.send_json(msg)
             rep = msg_factory(self.qnode.recv_json())
-            return rep.get_from_binary('result')
+            result = rep.get_from_binary('result')
+            stop_time = time.time()
+            self.last_call_duration = stop_time - start_time
+            return result
         return _rpc
  
 if __name__ == '__main__':
