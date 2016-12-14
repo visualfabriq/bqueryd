@@ -12,8 +12,11 @@ import binascii
 import traceback
 import json
 import cPickle
+import random
 
 def msg_factory(msg):
+    if type(msg) is str:
+        msg = json.loads(msg)
     msg_mapping = {'calc': CalcMessage, 'rpc': RPCMessage, 'error': ErrorMessage,
                    'worker_register': WorkerRegisterMessage, None: Message }
     msg_class = msg_mapping.get(msg.get('msg_type'))
@@ -37,11 +40,13 @@ class Message(dict):
         buf = self.get(key)
         if not buf: return
         return cPickle.loads(buf.decode('base64'))
+    def to_json(self):
+        return json.dumps(self)
 
 class WorkerRegisterMessage(Message):
     msg_type = 'worker_register'
-    def __init__(self, *args):
-        super(WorkerRegisterMessage, self).__init__()
+    def __init__(self, *args, **kwargs):
+        super(WorkerRegisterMessage, self).__init__(*args, **kwargs)
         self['worker_id'] = binascii.hexlify(os.urandom(8))
 
 class CalcMessage(Message):
@@ -53,27 +58,25 @@ class RPCMessage(Message):
 class ErrorMessage(Message):
     msg_type = 'error'
 
-class BaseNode(object):
-    def __init__(self):
-        self.context = zmq.Context()
 
+class WorkerNode(object):
+    def __init__(self):
         self.data_dir = config.get('data_dir', os.getcwd())
         self.data_files = [filename for filename in os.listdir(self.data_dir) if filename.endswith(config.DATA_FILE_EXTENSION)]
         if len(self.data_files) < 1:
             logging.debug('Data directory %s has no files like %s' % (self.data_dir, config.DATA_FILE_EXTENSION))
 
-class WorkerNode(BaseNode):
-    def __init__(self):
-        super(WorkerNode, self).__init__()
-        # We receive operations to perform from the ventilator on the receive socket
-        self.receive = self.context.socket(zmq.PULL)
-        # for now the ventilator is on localhost too, TODO get an address for it from central config
-        self.receive.connect('tcp://127.0.0.1:%s' % config.VENTILATOR_PORT)
-        self.results = self.context.socket(zmq.PUSH)
-        self.results.connect('tcp://127.0.0.1:%s' % config.SINK_PORT)
+        self.context = zmq.Context()
         wrm = WorkerRegisterMessage()
         self.worker_id = wrm['worker_id']
-        self.results.send_json(wrm)
+        wrm['data_files'] = self.data_files
+        wrm['data_dir'] = self.data_dir
+        # We receive operations to perform from the ventilator on the controller socket
+        self.controller = self.context.socket(zmq.DEALER)
+        self.controller.identity = self.worker_id
+        # for now the ventilator is on localhost too, TODO get an address for it from central config
+        self.controller.connect('tcp://127.0.0.1:%s' % config.VENTILATOR_PORT)
+        self.controller.send_json(wrm)
 
     def go(self):
         logging.debug('WorkerNode started')
@@ -81,7 +84,7 @@ class WorkerNode(BaseNode):
         self.running = True
         while self.running:
             time.sleep(0.0001) # give the system a breather to stop CPU usage being pegged at 100%
-            msg = self.receive.recv_json()
+            msg = self.controller.recv_json()
             msg = msg_factory(msg)
             logging.debug('Worker %s Msg received %s' % (self.worker_id, msg))
             try:
@@ -89,7 +92,8 @@ class WorkerNode(BaseNode):
             except Exception, e:
                 tmp = ErrorMessage(msg)
                 tmp['payload'] = traceback.format_exc()
-            self.results.send_json(tmp)
+            self.controller.send_json(tmp)
+            # TODO send a periodic heartbeat to the controller, in case of transience
         logging.debug('Stopping Worker %s' % self.worker_id)
 
     def handle(self, msg):
@@ -124,32 +128,27 @@ class WorkerNode(BaseNode):
         return msg
 
 
-class QNode(BaseNode):
+class QNode(object):
     def __init__(self):
-        super(QNode, self).__init__()
-
+        self.context = zmq.Context()
         self.rpc = self.context.socket(zmq.ROUTER)
         rpc_address = 'tcp://*:%s' % config.RPC_PORT
         self.rpc.bind(rpc_address)
         logging.debug('RPC on %s' % rpc_address)
 
-        self.ventilator = self.context.socket(zmq.PUSH)
+        self.ventilator = self.context.socket(zmq.ROUTER)
         ventilator_address = 'tcp://*:%s' % config.VENTILATOR_PORT
         self.ventilator.bind(ventilator_address)
         logging.debug('Ventilator on %s' % ventilator_address)
 
-        self.sink = self.context.socket(zmq.PULL)
-        sink_address = 'tcp://*:%s' % config.SINK_PORT
-        self.sink.bind(sink_address)
-        logging.debug('Sink on %s' % sink_address)
-
-        self.sink_msg_count = 0
+        self.msg_count = 0
         self.rpc_results = [] # buffer of results that are ready to be returned to callers
         self.worker_map = {}  # maintain a list of connected workers TODO get rid of unresponsive ones...
 
     def handle_sink(self, msg):
         if isinstance(msg, WorkerRegisterMessage):
-            self.worker_map[msg['worker_id']] = {'last_seen': time.time()}
+            tmp = {'last_seen': time.time(), 'wrm':msg}
+            self.worker_map[msg['worker_id']] = tmp
             logging.debug('QNode Worker registered %s' % msg.get('worker_id'))
             return
 
@@ -161,7 +160,7 @@ class QNode(BaseNode):
 
     def go(self):
         self.poller = zmq.Poller()
-        self.poller.register(self.sink, zmq.POLLIN)
+        self.poller.register(self.ventilator, zmq.POLLIN|zmq.POLLOUT)
         self.poller.register(self.rpc, zmq.POLLIN|zmq.POLLOUT)
 
         logging.debug('QNode started')
@@ -169,15 +168,17 @@ class QNode(BaseNode):
         socks = {}
         self.running = True
         while self.running:
-            time.sleep(0.0001) # give the system a breather to stop CPU usage being pegged at 100%
             try:
+                time.sleep(0.0001)  # give the system a breather to stop CPU usage being pegged at 100%
                 socks = dict(self.poller.poll())
 
-                if socks.get(self.sink) == zmq.POLLIN:
-                    msg = self.sink.recv_json()
+                if socks.get(self.ventilator) & zmq.POLLIN:
+                    buf = self.ventilator.recv_multipart()
+                    worker_id, msg = buf[0], buf[1]
                     msg = msg_factory(msg)
+                    msg['worker_id'] = worker_id
                     self.handle_sink(msg)
-                    self.sink_msg_count += 1
+                    self.msg_count += 1
 
                 if socks.get(self.rpc) & zmq.POLLIN:
                     buf = self.rpc.recv_multipart() # zmq.ROUTER sockets gets a triple with a msgid, blank msg and then the payload.
@@ -204,10 +205,9 @@ class QNode(BaseNode):
         logging.debug('Stopping QNode')
 
     def kill(self):
-        # Also kill the workers, we don't have direct connections to them
-        # but let's send 2 * count of workers to the ventilator...
-        for x in range(len(self.worker_map)):
-            self.ventilator.send_json(Message({'payload': 'kill'}))
+        # Send a kill message to each of our workers
+        for x in self.worker_map:
+            self.ventilator.send_multipart([x, Message({'payload': 'kill'}).to_json()] )
         self.running = False
 
     def handle_rpc(self, msg):
@@ -218,9 +218,7 @@ class QNode(BaseNode):
         # What kind of rpc calls can be made?
         data = {}
         if msg['payload'] == 'info':
-            data ={'sink_msg_count': self.sink_msg_count,
-                    'data_dir': self.data_dir,
-                    'data_files': self.data_files,
+            data ={'msg_count': self.msg_count,
                     'workers': self.worker_map
                   }
         elif msg['payload'] == 'kill':
@@ -229,9 +227,11 @@ class QNode(BaseNode):
             self.rpc_results.append(msg)
             self.kill()
         elif msg['payload'] in ('groupby', 'where_terms', 'sleep'):
+            # Pick a random worker_id to send a message to for now, TODO add some kind of load-balancing & affinity
+            worker_id = random.choice(self.worker_map.keys())
             # Send a calc message to the workers on the ventilator for the number of shards for this filename
             # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
-            self.ventilator.send_json(msg)
+            self.ventilator.send_multipart([worker_id, json.dumps(msg)])
         else:
             data = "Sorry, I don't understand you"
 
