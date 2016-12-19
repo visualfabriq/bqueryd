@@ -8,6 +8,7 @@ import config
 import logging
 logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.DEBUG)
 import bquery
+import bcolz
 import binascii
 import traceback
 import json
@@ -114,17 +115,43 @@ class WorkerNode(object):
             time.sleep(float(args[0]))
             buf = 'zzzzz'
         else:
-            filename = kwargs.pop('_filename')
+            filename = args[0]
+            groupby_col_list = args[1]
+            measure_col_list = args[2]
+            where_terms_list = args[3]
+            aggregate = kwargs.get('aggregate', True)
+
+            # create rootdir
             rootdir = os.path.join(self.data_dir, filename)
             if not os.path.exists(rootdir):
                 msg['payload'] = 'Path %s does not exist' % rootdir
                 return ErrorMessage(msg)
-            ct = bquery.ctable(rootdir=rootdir)
 
-            result_ctable = ct.groupby(*args)
-            buf = result_ctable.todataframe()
+            ct = bquery.ctable(rootdir=rootdir, mode='r')
+            ct.auto_cache = False
+
+            # prepare filter
+            if not where_terms_list:
+                bool_arr = None
+            else:
+                bool_arr = ct.where_terms(where_terms_list)
+
+            # retrieve & aggregate if needed
+            if aggregate:
+                # aggregate by groupby parameters
+                result_ctable = ct.groupby(groupby_col_list, measure_col_list, bool_arr=bool_arr)
+                buf = result_ctable.todataframe()
+            else:
+                # direct result from the ctable
+                column_list = groupby_col_list + measure_col_list
+                if bool_arr is not None:
+                    ct = bcolz.fromiter(ct[column_list].where(bool_arr), ct[column_list].dtype, sum(bool_arr))
+                else:
+                    ct = bcolz.fromiter(ct[column_list], ct[column_list].dtype, ct.len)
+                buf = ct[column_list].todataframe()
 
         msg.add_as_binary('result', buf)
+
         return msg
 
 
@@ -245,10 +272,17 @@ class QNode(object):
                 filename = params['kwargs']['_filename']
                 original_rpc['filenames'][filename] = msg.get_from_binary('result')
 
-                if len([True for v in original_rpc['filenames'].values() if v is None]) < 1: # Check to see that there are no filenames with no Result yet
+                if len([True for v in original_rpc['filenames'].values() if v is None]) < 1:
+                    # Check to see that there are no filenames with no Result yet
+
+                    # if finished, aggregate the result
                     new_result = pd.concat(original_rpc['filenames'].values(), ignore_index=True)
-                    groupby_cols, agg_list = params['args']
-                    new_result = new_result.groupby(groupby_cols, as_index=False)[agg_list] # TODO this needs to be generic and maybe done in a worker due to memory issues?
+
+                    if params['kwarg'].get('aggregate', True):
+                        # aggregate over totals if needed
+                        groupby_cols = params['args'][1]
+                        measure_cols = params['args'][2]
+                        new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols]
 
                     # We have received all the segment, send a reply to RPC caller
                     msg = original_rpc['msg']
@@ -279,7 +313,7 @@ class QNode(object):
             msg.add_as_binary('result', 'OK')
             self.rpc_results.append(msg)
             self.kill()
-        elif msg['payload'] in ('groupby', 'where_terms', 'sleep'):
+        elif msg['payload'] in ('groupby', 'sleep'):
             data = self.handle_calc_message(msg)
         else:
             data = "Sorry, I don't understand you"
@@ -290,12 +324,15 @@ class QNode(object):
 
     def handle_calc_message(self, msg):
         # Store the original message in the buf
-
-
         params = msg.get_from_binary('params') or {}
-        filenames = params.get('kwargs', {}).get('_filenames', [])
+
+        if len(params.get('args', [])) != 4:
+            return 'Error, No correct args given, expecting: ' + \
+                   'path_list, groupby_col_list, measure_col_list, where_terms_list'
+
+        filenames = params['args'][0]
         if not filenames:
-            return 'Error, kwargs in msg has no _filenames parameter?'
+            return 'Error, no filenames given'
 
         parent_token = msg['token']
         self.rpc_segments[parent_token] = {'msg': msg_factory(msg.copy()),
@@ -305,7 +342,7 @@ class QNode(object):
             if filename and filename not in self.files_map:
                 return 'Sorry, filename %s was not found' % filename
 
-            params['kwargs']['_filename'] = filename
+            params['args'][0] = filename
             msg.add_as_binary('params', params)
 
             # Make up a new token for the message sent to the workers, and collect the responses using that id
