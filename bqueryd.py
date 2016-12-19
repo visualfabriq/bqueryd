@@ -6,6 +6,7 @@ import time
 import zmq
 import config
 import logging
+
 logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.DEBUG)
 import bquery
 import bcolz
@@ -16,21 +17,25 @@ import cPickle
 import random
 import pandas as pd
 
+
 def msg_factory(msg):
     if type(msg) is str:
         msg = json.loads(msg)
     if not msg:
         return Message()
     msg_mapping = {'calc': CalcMessage, 'rpc': RPCMessage, 'error': ErrorMessage,
-                   'worker_register': WorkerRegisterMessage, None: Message }
+                   'worker_register': WorkerRegisterMessage, None: Message}
     msg_class = msg_mapping.get(msg.get('msg_type'))
     return msg_class(msg)
+
 
 class MalformedMessage(Exception):
     pass
 
+
 class Message(dict):
     msg_type = None
+
     def __init__(self, datadict={}):
         if datadict is None:
             datadict = {}
@@ -38,26 +43,34 @@ class Message(dict):
         self['payload'] = datadict.get('payload')
         self['version'] = datadict.get('version', 1)
         self['msg_type'] = self.msg_type
+
     def add_as_binary(self, key, value):
         self[key] = cPickle.dumps(value).encode('base64')
+
     def get_from_binary(self, key):
         buf = self.get(key)
         if not buf: return
         return cPickle.loads(buf.decode('base64'))
+
     def to_json(self):
         return json.dumps(self)
 
+
 class WorkerRegisterMessage(Message):
     msg_type = 'worker_register'
+
     def __init__(self, *args, **kwargs):
         super(WorkerRegisterMessage, self).__init__(*args, **kwargs)
         self['worker_id'] = binascii.hexlify(os.urandom(8))
 
+
 class CalcMessage(Message):
     msg_type = 'calc'
 
+
 class RPCMessage(Message):
     msg_type = 'rpc'
+
 
 class ErrorMessage(Message):
     msg_type = 'error'
@@ -66,7 +79,8 @@ class ErrorMessage(Message):
 class WorkerNode(object):
     def __init__(self):
         self.data_dir = config.get('data_dir', os.getcwd())
-        self.data_files = [filename for filename in os.listdir(self.data_dir) if filename.endswith(config.DATA_FILE_EXTENSION)]
+        self.data_files = [filename for filename in os.listdir(self.data_dir) if
+                           filename.endswith(config.DATA_FILE_EXTENSION)]
         if len(self.data_files) < 1:
             logging.debug('Data directory %s has no files like %s' % (self.data_dir, config.DATA_FILE_EXTENSION))
 
@@ -87,7 +101,7 @@ class WorkerNode(object):
 
         self.running = True
         while self.running:
-            time.sleep(0.0001) # give the system a breather to stop CPU usage being pegged at 100%
+            time.sleep(0.0001)  # give the system a breather to stop CPU usage being pegged at 100%
             msg = self.controller.recv_json()
             msg = msg_factory(msg)
             logging.debug('Worker %s received msg %s' % (self.worker_id, msg.get('token', '?')))
@@ -169,15 +183,15 @@ class QNode(object):
         logging.debug('Ventilator on %s' % ventilator_address)
 
         self.msg_count = 0
-        self.rpc_results = [] # buffer of results that are ready to be returned to callers
-        self.rpc_segments = {} # Certain RPC calls get split and divided over workers, this dict tracks the original RPCs
+        self.rpc_results = []  # buffer of results that are ready to be returned to callers
+        self.rpc_segments = {}  # Certain RPC calls get split and divided over workers, this dict tracks the original RPCs
         self.worker_map = {}  # maintain a list of connected workers TODO get rid of unresponsive ones...
-        self.files_map = {} # shows on which workers a file is available on
+        self.files_map = {}  # shows on which workers a file is available on
         self.outgoing_messages = []
 
     def handle_sink(self, msg):
         if isinstance(msg, WorkerRegisterMessage):
-            tmp = {'last_seen': time.time(), 'wrm':msg}
+            tmp = {'last_seen': time.time(), 'wrm': msg}
             worker_id = msg.get('worker_id')
             self.worker_map[worker_id] = tmp
             logging.debug('QNode Worker registered %s' % worker_id)
@@ -201,8 +215,8 @@ class QNode(object):
 
     def go(self):
         self.poller = zmq.Poller()
-        self.poller.register(self.ventilator, zmq.POLLIN|zmq.POLLOUT)
-        self.poller.register(self.rpc, zmq.POLLIN|zmq.POLLOUT)
+        self.poller.register(self.ventilator, zmq.POLLIN | zmq.POLLOUT)
+        self.poller.register(self.rpc, zmq.POLLIN | zmq.POLLOUT)
 
         logging.debug('QNode started')
 
@@ -236,7 +250,7 @@ class QNode(object):
                         self.ventilator.send_multipart([worker_id, json.dumps(msg)])
 
                 if socks.get(self.rpc) & zmq.POLLIN:
-                    buf = self.rpc.recv_multipart() # zmq.ROUTER sockets gets a triple with a msgid, blank msg and then the payload.
+                    buf = self.rpc.recv_multipart()  # zmq.ROUTER sockets gets a triple with a msgid, blank msg and then the payload.
                     msg_id = binascii.hexlify(buf[0])
                     msg = json.loads(buf[2])
                     msg['token'] = msg_id
@@ -257,7 +271,7 @@ class QNode(object):
     def kill(self):
         # Send a kill message to each of our workers
         for x in self.worker_map:
-            self.ventilator.send_multipart([x, Message({'payload': 'kill', 'token':'kill'}).to_json()] )
+            self.ventilator.send_multipart([x, Message({'payload': 'kill', 'token': 'kill'}).to_json()])
         self.running = False
 
     def process_sink_results(self):
@@ -305,9 +319,9 @@ class QNode(object):
         # What kind of rpc calls can be made?
         data = {}
         if msg['payload'] == 'info':
-            data ={'msg_count': self.msg_count,
+            data = {'msg_count': self.msg_count,
                     'workers': self.worker_map
-                  }
+                    }
         elif msg['payload'] == 'kill':
             # And reply to our caller, otherwise they will just hang
             msg.add_as_binary('result', 'OK')
@@ -336,7 +350,7 @@ class QNode(object):
 
         parent_token = msg['token']
         self.rpc_segments[parent_token] = {'msg': msg_factory(msg.copy()),
-                                           'filenames': dict([(x,None) for x in filenames]) }
+                                           'filenames': dict([(x, None) for x in filenames])}
 
         for filename in filenames:
             if filename and filename not in self.files_map:
@@ -351,8 +365,8 @@ class QNode(object):
 
             self.outgoing_messages.append(msg.copy())
 
-class RPC(object):
 
+class RPC(object):
     def __init__(self):
         self.context = zmq.Context()
         self.qnode = self.context.socket(zmq.REQ)
@@ -370,7 +384,7 @@ class RPC(object):
                 params['kwargs'] = kwargs
             # We do not want string args to be converted into unicode by the JSON machinery
             # bquery ctable does not like col names to be unicode for example
-            msg = RPCMessage({'payload':name})
+            msg = RPCMessage({'payload': name})
             msg.add_as_binary('params', params)
             self.qnode.send_json(msg)
             rep = msg_factory(self.qnode.recv_json())
@@ -378,12 +392,14 @@ class RPC(object):
             stop_time = time.time()
             self.last_call_duration = stop_time - start_time
             return result
+
         return _rpc
- 
+
+
 if __name__ == '__main__':
-    if '-w' in sys.argv: # Worker
+    if '-w' in sys.argv:  # Worker
         w = WorkerNode()
         w.go()
-    elif '-q' in sys.argv: # Qnode
+    elif '-q' in sys.argv:  # Qnode
         q = QNode()
         q.go()
