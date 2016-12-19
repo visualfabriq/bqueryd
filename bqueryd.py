@@ -82,14 +82,14 @@ class WorkerNode(object):
         self.controller.send_json(wrm)
 
     def go(self):
-        logging.debug('WorkerNode started')
+        logging.debug('WorkerNode %s started' % self.worker_id)
 
         self.running = True
         while self.running:
             time.sleep(0.0001) # give the system a breather to stop CPU usage being pegged at 100%
             msg = self.controller.recv_json()
             msg = msg_factory(msg)
-            logging.debug('Worker %s Msg received %s' % (self.worker_id, msg))
+            logging.debug('Worker %s received msg %s' % (self.worker_id, msg.get('token', '?')))
             try:
                 tmp = self.handle(msg)
             except Exception, e:
@@ -146,6 +146,7 @@ class QNode(object):
         self.rpc_segments = {} # Certain RPC calls get split and divided over workers, this dict tracks the original RPCs
         self.worker_map = {}  # maintain a list of connected workers TODO get rid of unresponsive ones...
         self.files_map = {} # shows on which workers a file is available on
+        self.outgoing_messages = []
 
     def handle_sink(self, msg):
         if isinstance(msg, WorkerRegisterMessage):
@@ -163,6 +164,13 @@ class QNode(object):
             return
         logging.debug('QNode Sink received %s' % msg.get('token', '?'))
         self.rpc_results.append(msg)
+
+    def find_free_worker(self):
+        # Pick a random worker_id to send a message to for now, TODO add some kind of load-balancing & affinity
+        free_workers = [worker_id for worker_id, worker in self.worker_map.items() if 'last_msg' not in worker]
+        if not free_workers:
+            return None
+        return random.choice(free_workers)
 
     def go(self):
         self.poller = zmq.Poller()
@@ -184,14 +192,28 @@ class QNode(object):
                     msg = msg_factory(msg)
                     msg['worker_id'] = worker_id
                     self.handle_sink(msg)
+                    if 'last_msg' in self.worker_map.get(worker_id, {}):
+                        del self.worker_map[worker_id]['last_msg']
                     self.msg_count += 1
+                if socks.get(self.ventilator) & zmq.POLLOUT:
+                    while self.outgoing_messages:
+                        # find a worker that is free
+                        worker_id = self.find_free_worker()
+                        if not worker_id:
+                            break
+
+                        msg = self.outgoing_messages.pop()
+                        # Send a calc message to the workers on the ventilator for the number of shards for this filename
+                        # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
+                        self.worker_map[worker_id]['last_msg'] = time.time()
+                        self.ventilator.send_multipart([worker_id, json.dumps(msg)])
 
                 if socks.get(self.rpc) & zmq.POLLIN:
                     buf = self.rpc.recv_multipart() # zmq.ROUTER sockets gets a triple with a msgid, blank msg and then the payload.
                     msg_id = binascii.hexlify(buf[0])
                     msg = json.loads(buf[2])
                     msg['token'] = msg_id
-                    logging.debug('QNode Msg received %s' % msg)
+                    logging.debug('QNode RPC received %s' % msg_id)
                     msg = msg_factory(msg)
                     self.handle_rpc(msg)
                 if socks.get(self.rpc) & zmq.POLLOUT:
@@ -208,7 +230,7 @@ class QNode(object):
     def kill(self):
         # Send a kill message to each of our workers
         for x in self.worker_map:
-            self.ventilator.send_multipart([x, Message({'payload': 'kill'}).to_json()] )
+            self.ventilator.send_multipart([x, Message({'payload': 'kill', 'token':'kill'}).to_json()] )
         self.running = False
 
     def process_sink_results(self):
@@ -226,7 +248,7 @@ class QNode(object):
                 if len([True for v in original_rpc['filenames'].values() if v is None]) < 1: # Check to see that there are no filenames with no Result yet
                     new_result = pd.concat(original_rpc['filenames'].values(), ignore_index=True)
                     groupby_cols, agg_list = params['args']
-                    new_result = new_result.groupby(groupby_cols)[agg_list] # TODO this needs to be generic and maybe done in a worker due to memory issues?
+                    new_result = new_result.groupby(groupby_cols, as_index=False)[agg_list] # TODO this needs to be generic and maybe done in a worker due to memory issues?
 
                     # We have received all the segment, send a reply to RPC caller
                     msg = original_rpc['msg']
@@ -290,12 +312,7 @@ class QNode(object):
             msg['parent_token'] = parent_token
             msg['token'] = binascii.hexlify(os.urandom(8))
 
-            # Pick a random worker_id to send a message to for now, TODO add some kind of load-balancing & affinity
-            worker_id = random.choice(self.worker_map.keys())
-            # Send a calc message to the workers on the ventilator for the number of shards for this filename
-            # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
-            self.ventilator.send_multipart([worker_id, json.dumps(msg)])
-
+            self.outgoing_messages.append(msg.copy())
 
 class RPC(object):
 
