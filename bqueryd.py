@@ -283,16 +283,17 @@ class QNode(object):
                 original_rpc = self.rpc_segments.get(parent_token)
 
                 params = msg.get_from_binary('params') or {}
-                filename = params['kwargs']['_filename']
+                filename = params['args'][0]
                 original_rpc['filenames'][filename] = msg.get_from_binary('result')
 
                 if len([True for v in original_rpc['filenames'].values() if v is None]) < 1:
                     # Check to see that there are no filenames with no Result yet
+                    # TODO as soon as any workers gives an error abort the whole enchilada
 
                     # if finished, aggregate the result
                     new_result = pd.concat(original_rpc['filenames'].values(), ignore_index=True)
 
-                    if params['kwarg'].get('aggregate', True):
+                    if params['kwargs'].get('aggregate', True):
                         # aggregate over totals if needed
                         groupby_cols = params['args'][1]
                         measure_cols = params['args'][2]
@@ -356,6 +357,7 @@ class QNode(object):
             if filename and filename not in self.files_map:
                 return 'Sorry, filename %s was not found' % filename
 
+            params['args'] = list(params['args'])
             params['args'][0] = filename
             msg.add_as_binary('params', params)
 
