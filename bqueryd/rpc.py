@@ -8,9 +8,7 @@ from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
 
 class RPCError(Exception):
     """Base class for exceptions in this module."""
-    def __init__(self, expr, msg):
-        self.expr = expr
-        self.msg = msg
+    pass
 
 
 class RPC(object):
@@ -39,7 +37,7 @@ class RPC(object):
             self.controller.send_json(msg)
             rep = msg_factory(self.controller.recv_json())
             if isinstance(rep, ErrorMessage):
-                raise Exception(rep.get('payload'))
+                raise RPCError(rep.get('payload'))
             result = rep.get_from_binary('result')
             stop_time = time.time()
             self.last_call_duration = stop_time - start_time
