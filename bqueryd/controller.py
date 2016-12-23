@@ -143,7 +143,7 @@ class ControllerNode(object):
                             new_result = pd.DataFrame(new_result.sum()).transpose()
                         else:
                             # aggregate over totals if needed
-                            new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols]
+                            new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols].sum()
 
                     # We have received all the segment, send a reply to RPC caller
                     msg = original_rpc['msg']
