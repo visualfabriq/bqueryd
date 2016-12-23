@@ -5,6 +5,7 @@ logger = logging.getLogger('bqueryd RPC')
 import time
 from bqueryd.messages import msg_factory, RPCMessage
 
+
 class RPCError(Exception):
     """Base class for exceptions in this module."""
     def __init__(self, expr, msg):
