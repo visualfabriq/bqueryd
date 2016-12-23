@@ -6,6 +6,13 @@ import time
 from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
 
 
+class RPCError(Exception):
+    """Base class for exceptions in this module."""
+    def __init__(self, expr, msg):
+        self.expr = expr
+        self.msg = msg
+
+
 class RPC(object):
     def __init__(self, timeout=3600):
         self.context = zmq.Context()
