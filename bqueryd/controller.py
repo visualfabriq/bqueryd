@@ -8,7 +8,7 @@ import json
 import random
 import pandas as pd
 import bqueryd
-from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage
+from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage
 
 logger = logging.getLogger('Controller')
 
@@ -123,7 +123,24 @@ class ControllerNode(object):
             # If this was a message to be combined, there should be a parent_token
             if 'parent_token' in msg:
                 parent_token = msg['parent_token']
+                if parent_token not in self.rpc_segments:
+                    logging.debug('Orphaned msg segment %s probabably an error was raised elsewhere' % parent_token)
+                    continue
                 original_rpc = self.rpc_segments.get(parent_token)
+
+                if isinstance(msg, ErrorMessage):
+                    logger.debug('Errormesssage %s' % msg.get('payload'))
+                    # Delete this entire message segments, if it still exists
+                    if parent_token in self.rpc_segments:
+                        del self.rpc_segments[parent_token]
+                        # If any of the segment workers return an error,
+                        # Send the exception on to the calling RPC
+                        msg['token'] = parent_token
+                        msg_id = binascii.unhexlify(parent_token)
+                        tmp = [msg_id, '', json.dumps(msg)]
+                        self.rpc.send_multipart(tmp)
+                    # and continue the processing
+                    continue
 
                 params = msg.get_from_binary('params') or {}
                 filename = params['args'][0]
@@ -143,7 +160,7 @@ class ControllerNode(object):
                             new_result = pd.DataFrame(new_result.sum()).transpose()
                         else:
                             # aggregate over totals if needed
-                            new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols]
+                            new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols].sum()
 
                     # We have received all the segment, send a reply to RPC caller
                     msg = original_rpc['msg']

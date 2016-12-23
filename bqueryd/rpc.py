@@ -3,7 +3,7 @@ import zmq
 import logging
 logger = logging.getLogger('bqueryd RPC')
 import time
-from bqueryd.messages import msg_factory, RPCMessage
+from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
 
 
 class RPC(object):
@@ -31,6 +31,8 @@ class RPC(object):
             msg.add_as_binary('params', params)
             self.controller.send_json(msg)
             rep = msg_factory(self.controller.recv_json())
+            if isinstance(rep, ErrorMessage):
+                raise Exception(rep.get('payload'))
             result = rep.get_from_binary('result')
             stop_time = time.time()
             self.last_call_duration = stop_time - start_time
