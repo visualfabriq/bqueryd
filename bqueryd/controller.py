@@ -127,14 +127,14 @@ class ControllerNode(object):
 
                 params = msg.get_from_binary('params') or {}
                 filename = params['args'][0]
-                original_rpc['filenames'][filename] = msg.get_from_binary('result')
+                original_rpc['results'][filename] = msg.get_from_binary('result')
 
-                if len([True for v in original_rpc['filenames'].values() if v is None]) < 1:
+                if len(original_rpc['results']) == len(original_rpc['filenames']):
                     # Check to see that there are no filenames with no Result yet
                     # TODO as soon as any workers gives an error abort the whole enchilada
 
                     # if finished, aggregate the result
-                    new_result = pd.concat(original_rpc['filenames'].values(), ignore_index=True)
+                    new_result = pd.concat(original_rpc['results'].values(), ignore_index=True)
 
                     if params.get('kwargs', {}).get('aggregate', True):
                         groupby_cols = params['args'][1]
@@ -195,20 +195,28 @@ class ControllerNode(object):
         if not filenames:
             return 'Error, no filenames given'
 
-        parent_token = msg['token']
-        self.rpc_segments[parent_token] = {'msg': msg_factory(msg.copy()),
-                                           'filenames': dict([(x, None) for x in filenames])}
-
+        # Make sure that all filenames are available before any messages are sent
         for filename in filenames:
             if filename and filename not in self.files_map:
                 return 'Sorry, filename %s was not found' % filename
 
+
+
+        parent_token = msg['token']
+        rpc_segment = {'msg': msg_factory(msg.copy()),
+                       'results' : {},
+                       'filenames': dict([(x, None) for x in filenames])}
+
+        for filename in filenames:
             params['args'] = list(params['args'])
             params['args'][0] = filename
             msg.add_as_binary('params', params)
 
             # Make up a new token for the message sent to the workers, and collect the responses using that id
             msg['parent_token'] = parent_token
-            msg['token'] = binascii.hexlify(os.urandom(8))
-
+            new_token = binascii.hexlify(os.urandom(8))
+            msg['token'] = new_token
+            rpc_segment['filenames'][filename] = new_token
             self.outgoing_messages.append(msg.copy())
+
+        self.rpc_segments[parent_token] = rpc_segment
