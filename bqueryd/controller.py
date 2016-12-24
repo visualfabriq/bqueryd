@@ -217,8 +217,6 @@ class ControllerNode(object):
             if filename and filename not in self.files_map:
                 return 'Sorry, filename %s was not found' % filename
 
-
-
         parent_token = msg['token']
         rpc_segment = {'msg': msg_factory(msg.copy()),
                        'results' : {},
