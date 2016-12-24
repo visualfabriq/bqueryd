@@ -11,6 +11,8 @@ from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage
 
 DEFAULT_DATA_DIR = '/srv/bcolz/'
 DATA_FILE_EXTENSION = '.bcolz'
+DATA_SHARD_FILE_EXTENSION = '.bcolzs'
+
 logger = logging.getLogger('Worker')
 
 class WorkerNode(object):
@@ -20,9 +22,10 @@ class WorkerNode(object):
             raise Exception("Datadir %s is not a valid difrectory" % data_dir)
         self.data_dir = data_dir
         self.data_files = [filename for filename in os.listdir(self.data_dir) if
-                           filename.endswith(DATA_FILE_EXTENSION)]
+                           filename.endswith(DATA_FILE_EXTENSION) or filename.endswith(DATA_SHARD_FILE_EXTENSION)]
         if len(self.data_files) < 1:
-            logger.debug('Data directory %s has no files like %s' % (self.data_dir, DATA_FILE_EXTENSION))
+            logger.debug('Data directory %s has no files like %s or %s' % (
+                self.data_dir, DATA_FILE_EXTENSION, DATA_SHARD_FILE_EXTENSION))
 
         self.context = zmq.Context()
         wrm = WorkerRegisterMessage()
