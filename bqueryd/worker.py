@@ -12,6 +12,7 @@ from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage
 DEFAULT_DATA_DIR = '/srv/bcolz/'
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
+bcolz.set_nthreads(1)
 
 logger = logging.getLogger('Worker')
 
