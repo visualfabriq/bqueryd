@@ -18,7 +18,7 @@ class RPC(object):
         self.controller.setsockopt(zmq.RCVTIMEO, timeout*1000)
         self.controller.setsockopt(zmq.LINGER, 0)
 
-        rpc_address = 'tcp://$s:%s' % (ip, bqueryd.RPC_PORT)
+        rpc_address = 'tcp://%s:%s' % (ip, str(bqueryd.RPC_PORT))
         self.controller.connect(rpc_address)
         logger.debug('Will do RPC requests to %s' % rpc_address)
 
