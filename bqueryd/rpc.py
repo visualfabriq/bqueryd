@@ -12,13 +12,13 @@ class RPCError(Exception):
 
 
 class RPC(object):
-    def __init__(self, timeout=3600):
+    def __init__(self, ip='127.0.0.1', timeout=3600):
         self.context = zmq.Context()
         self.controller = self.context.socket(zmq.REQ)
         self.controller.setsockopt(zmq.RCVTIMEO, timeout*1000)
         self.controller.setsockopt(zmq.LINGER, 0)
 
-        rpc_address = 'tcp://127.0.0.1:%s' % bqueryd.RPC_PORT
+        rpc_address = 'tcp://$s:%s' % (ip, bqueryd.RPC_PORT)
         self.controller.connect(rpc_address)
         logger.debug('Will do RPC requests to %s' % rpc_address)
 
