@@ -75,7 +75,7 @@ class WorkerNode(object):
         else:
             filename = args[0]
             groupby_col_list = args[1]
-            measure_col_list = args[2]
+            aggregation_list = args[2]
             where_terms_list = args[3]
             aggregate = kwargs.get('aggregate', True)
 
@@ -97,11 +97,11 @@ class WorkerNode(object):
             # retrieve & aggregate if needed
             if aggregate:
                 # aggregate by groupby parameters
-                result_ctable = ct.groupby(groupby_col_list, measure_col_list, bool_arr=bool_arr)
+                result_ctable = ct.groupby(groupby_col_list, aggregation_list, bool_arr=bool_arr)
                 buf = result_ctable.todataframe()
             else:
                 # direct result from the ctable
-                column_list = groupby_col_list + measure_col_list
+                column_list = groupby_col_list + [x[0] for x in aggregation_list]
                 if bool_arr is not None:
                     ct = bcolz.fromiter(ct[column_list].where(bool_arr), ct[column_list].dtype, sum(bool_arr))
                 else:
