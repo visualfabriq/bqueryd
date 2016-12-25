@@ -151,17 +151,8 @@ class ControllerNode(object):
                     # TODO as soon as any workers gives an error abort the whole enchilada
 
                     # if finished, aggregate the result
-                    new_result = pd.concat(original_rpc['results'].values(), ignore_index=True)
-
-                    if params.get('kwargs', {}).get('aggregate', True):
-                        groupby_cols = params['args'][1]
-                        measure_cols = params['args'][2]
-                        if not groupby_cols:
-                            new_result = pd.DataFrame(new_result.sum()).transpose()
-                        else:
-                            # aggregate over totals if needed
-                            new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols].sum()
-
+                    result_list = original_rpc['results'].values()
+                    new_result = self.create_result_from_response(params, result_list)
                     # We have received all the segment, send a reply to RPC caller
                     msg = original_rpc['msg']
                     msg.add_as_binary('result', new_result)
@@ -235,3 +226,25 @@ class ControllerNode(object):
             self.outgoing_messages.append(msg.copy())
 
         self.rpc_segments[parent_token] = rpc_segment
+
+    @staticmethod
+    def create_result_from_response(params, result_list):
+        if not result_list:
+            new_result = pd.DataFrame()
+        elif len(result_list) == 1:
+            new_result = result_list[0]
+        else:
+            new_result = pd.concat(result_list, ignore_index=True)
+
+            if params.get('kwargs', {}).get('aggregate', True):
+                groupby_cols = params['args'][1]
+                aggregation_list = params['args'][2]
+                if not groupby_cols or not aggregation_list:
+                    new_result = pd.DataFrame(new_result.sum()).transpose()
+                else:
+                    # aggregate over totals if needed
+                    measure_cols = [x[2] for x in aggregation_list]
+                    new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols].sum()
+
+        return new_result
+
