@@ -240,9 +240,9 @@ class ControllerNode(object):
             if params.get('kwargs', {}).get('aggregate', True) and not new_result.empty:
                 groupby_cols = params['args'][1]
                 aggregation_list = params['args'][2]
-                if not groupby_cols or not aggregation_list:
+                if not groupby_cols:
                     new_result = pd.DataFrame(new_result.sum()).transpose()
-                else:
+                elif aggregation_list:
                     # aggregate over totals if needed
                     measure_cols = [x[2] for x in aggregation_list]
                     new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols].sum()
