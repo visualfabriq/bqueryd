@@ -12,6 +12,7 @@ from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorM
 
 logger = logging.getLogger('Controller')
 
+
 class ControllerNode(object):
     def __init__(self):
         self.context = zmq.Context()
@@ -210,7 +211,7 @@ class ControllerNode(object):
 
         parent_token = msg['token']
         rpc_segment = {'msg': msg_factory(msg.copy()),
-                       'results' : {},
+                       'results': {},
                        'filenames': dict([(x, None) for x in filenames])}
 
         for filename in filenames:
@@ -236,7 +237,7 @@ class ControllerNode(object):
         else:
             new_result = pd.concat(result_list, ignore_index=True)
 
-            if params.get('kwargs', {}).get('aggregate', True):
+            if params.get('kwargs', {}).get('aggregate', True) and not new_result.empty:
                 groupby_cols = params['args'][1]
                 aggregation_list = params['args'][2]
                 if not groupby_cols or not aggregation_list:
@@ -247,4 +248,3 @@ class ControllerNode(object):
                     new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols].sum()
 
         return new_result
-
