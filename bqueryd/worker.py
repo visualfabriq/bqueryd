@@ -77,6 +77,7 @@ class WorkerNode(object):
             groupby_col_list = args[1]
             aggregation_list = args[2]
             where_terms_list = args[3]
+            expand_filter_column = kwargs.get('expand_filter_column')
             aggregate = kwargs.get('aggregate', True)
 
             # create rootdir
@@ -93,6 +94,11 @@ class WorkerNode(object):
                 bool_arr = None
             else:
                 bool_arr = ct.where_terms(where_terms_list)
+
+            # expand filter column check
+            if expand_filter_column:
+                bool_arr = \
+                    ct.is_in_ordered_subgroups(basket_col=expand_filter_column, bool_arr=bool_arr)
 
             # retrieve & aggregate if needed
             if aggregate:
