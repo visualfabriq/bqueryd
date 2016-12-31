@@ -97,8 +97,7 @@ class WorkerNode(object):
 
             # expand filter column check
             if expand_filter_column:
-                bool_arr = \
-                    ct.is_in_ordered_subgroups(basket_col=expand_filter_column, bool_arr=bool_arr)
+                bool_arr = ct.is_in_ordered_subgroups(basket_col=expand_filter_column, bool_arr=bool_arr)
 
             # retrieve & aggregate if needed
             if aggregate:
