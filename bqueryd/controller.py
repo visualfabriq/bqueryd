@@ -7,24 +7,31 @@ import traceback
 import json
 import random
 import pandas as pd
+import redis
 import bqueryd
 from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage
-
+from bqueryd.util import get_my_ip
 logger = logging.getLogger('Controller')
 
 
 class ControllerNode(object):
-    def __init__(self):
+    def __init__(self, redis_url='redis://127.0.0.1:6379/0'):
+        self.redis_url = redis_url
+        redis_server = redis.from_url(redis_url)
         self.context = zmq.Context()
+
         self.rpc = self.context.socket(zmq.ROUTER)
-        rpc_address = 'tcp://*:%s' % bqueryd.RPC_PORT
-        self.rpc.bind(rpc_address)
-        logger.debug('RPC on %s' % rpc_address)
+        port_selected = self.rpc.bind_to_random_port('tcp://*', min_port=14300, max_port=14399, max_tries=100)
+        self.rpc_address = 'tcp://%s:%s' % (get_my_ip(), port_selected)
+        redis_server.sadd('bqueryd_controllers_rpc', self.rpc_address)
+        logger.debug('RPC Address %s' % self.rpc_address)
 
         self.ventilator = self.context.socket(zmq.ROUTER)
-        ventilator_address = 'tcp://*:%s' % bqueryd.VENTILATOR_PORT
-        self.ventilator.bind(ventilator_address)
-        logger.debug('Ventilator on %s' % ventilator_address)
+        port_selected = self.ventilator.bind_to_random_port('tcp://*', min_port=14400, max_port=14499, max_tries=100)
+        r = redis.from_url(redis_url)
+        self.sink_address = 'tcp://%s:%s' % (get_my_ip(), port_selected)
+        redis_server.sadd('bqueryd_controllers_sink', self.sink_address)
+        logger.debug('Sink Address %s' % self.sink_address)
 
         self.msg_count = 0
         self.rpc_results = []  # buffer of results that are ready to be returned to callers
@@ -117,6 +124,10 @@ class ControllerNode(object):
         for x in self.worker_map:
             self.ventilator.send_multipart([x, Message({'payload': 'kill', 'token': 'kill'}).to_json()])
         self.running = False
+        # Remove your address from the Redis controller list
+        redis_server = redis.from_url(self.redis_url)
+        redis_server.srem('bqueryd_controllers_rpc', self.rpc_address)
+        redis_server.srem('bqueryd_controllers_sink', self.sink_address)
 
     def process_sink_results(self):
         while self.rpc_results:

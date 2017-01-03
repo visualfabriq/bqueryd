@@ -6,6 +6,7 @@ import bcolz
 import traceback
 import cPickle
 import logging
+import redis
 import bqueryd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage
 
@@ -18,7 +19,7 @@ logger = logging.getLogger('Worker')
 
 class WorkerNode(object):
 
-    def __init__(self, data_dir=DEFAULT_DATA_DIR):
+    def __init__(self, data_dir=DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0'):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
             raise Exception("Datadir %s is not a valid difrectory" % data_dir)
         self.data_dir = data_dir
@@ -28,34 +29,53 @@ class WorkerNode(object):
             logger.debug('Data directory %s has no files like %s or %s' % (
                 self.data_dir, DATA_FILE_EXTENSION, DATA_SHARD_FILE_EXTENSION))
 
+        # Check the redis set of Controllers, and connect to all of them
+        redis_server = redis.from_url(redis_url)
+        controllers = redis_server.smembers('bqueryd_controllers_sink')
+        if not controllers:
+            raise Exception('No Controllers found in Redis set: bqueryd_controllers_sink')
+
         self.context = zmq.Context()
         wrm = WorkerRegisterMessage()
         self.worker_id = wrm['worker_id']
         wrm['data_files'] = self.data_files
         wrm['data_dir'] = self.data_dir
-        # We receive operations to perform from the ventilator on the controller socket
-        self.controller = self.context.socket(zmq.DEALER)
-        self.controller.identity = self.worker_id
-        # for now the ventilator is on localhost too, TODO get an address for it from central config
-        self.controller.connect('tcp://127.0.0.1:%s' % bqueryd.VENTILATOR_PORT)
-        self.controller.send_json(wrm)
+        self.controllers = []
+
+        for controller_address in controllers:
+            # We receive operations to perform from the ventilator on the controller socket
+            controller = self.context.socket(zmq.DEALER)
+            controller.identity = self.worker_id
+            controller.connect(controller_address)
+            controller.send_json(wrm)
+            self.controllers.append(controller)
+
 
     def go(self):
-        logger.debug('Node %s started' % self.worker_id)
+        poller = zmq.Poller()
+        for controller in self.controllers:
+            poller.register(controller, zmq.POLLIN)
 
         self.running = True
         while self.running:
             time.sleep(0.0001)  # give the system a breather to stop CPU usage being pegged at 100%
-            msg = self.controller.recv_json()
-            msg = msg_factory(msg)
-            logger.debug('%s received msg %s' % (self.worker_id, msg.get('token', '?')))
-            try:
-                tmp = self.handle(msg)
-            except Exception, e:
-                tmp = ErrorMessage(msg)
-                tmp['payload'] = traceback.format_exc()
-            self.controller.send_json(tmp)
-            # TODO send a periodic heartbeat to the controller, in case of transience
+
+            for sock, event in poller.poll():
+                if event & zmq.POLLIN:
+                    msg = sock.recv_json()
+                    msg = msg_factory(msg)
+                    logger.debug('%s received msg %s' % (self.worker_id, msg.get('token', '?')))
+                    # TODO Notify Controllers that we are busy, no more messages to be sent
+                    # The above busy notification is not perfect as other messages might be on their way already
+                    # but for long-running queries it will at least ensure other controllers
+                    # don't try and overuse this node by filling up a queue
+                    try:
+                        tmp = self.handle(msg)
+                    except Exception, e:
+                        tmp = ErrorMessage(msg)
+                        tmp['payload'] = traceback.format_exc()
+                    sock.send_json(tmp)
+                    # TODO send a periodic heartbeat to the controller, in case of transience
         logger.debug('Stopping %s' % self.worker_id)
 
     def handle(self, msg):

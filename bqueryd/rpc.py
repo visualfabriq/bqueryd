@@ -3,6 +3,8 @@ import zmq
 import logging
 logger = logging.getLogger('bqueryd RPC')
 import time
+import redis
+import random
 from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
 
 
@@ -12,15 +14,19 @@ class RPCError(Exception):
 
 
 class RPC(object):
-    def __init__(self, ip='127.0.0.1', timeout=3600):
+    def __init__(self, ip='127.0.0.1', timeout=3600, redis_url='redis://127.0.0.1:6379/0'):
         self.context = zmq.Context()
         self.controller = self.context.socket(zmq.REQ)
         self.controller.setsockopt(zmq.RCVTIMEO, timeout*1000)
         self.controller.setsockopt(zmq.LINGER, 0)
 
-        rpc_address = 'tcp://%s:%s' % (ip, str(bqueryd.RPC_PORT))
-        self.controller.connect(rpc_address)
-        logger.debug('Will do RPC requests to %s' % rpc_address)
+        # Bind to a random controller
+        redis_server = redis.from_url(redis_url)
+        controllers = redis_server.smembers('bqueryd_controllers_rpc')
+        if len(controllers) < 1:
+            raise Exception('No Controllers found in Redis set: bqueryd_controllers_rpc')
+
+        self.controller.connect(random.choice(list(controllers)))
 
     def __getattr__(self, name):
         def _rpc(*args, **kwargs):

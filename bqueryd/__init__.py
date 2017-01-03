@@ -1,12 +1,9 @@
 import logging
 logging.basicConfig(format="%(asctime)s %(name)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.DEBUG)
 
-__version__ = 0.1
+__version__ = 0.2
 
-VENTILATOR_PORT = 14335
-RPC_PORT = 14337
-
-from rpc import RPC
+from rpc import RPC, RPCError
 from controller import ControllerNode
 from worker import WorkerNode
 
@@ -20,3 +17,5 @@ def threaded():
 
     worker.start()
     queue.start()
+
+    return q, w
