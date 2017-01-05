@@ -8,7 +8,6 @@ import json
 import random
 import pandas as pd
 import redis
-import bqueryd
 from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage
 from bqueryd.util import get_my_ip
 logger = logging.getLogger('Controller')
@@ -41,18 +40,20 @@ class ControllerNode(object):
         self.outgoing_messages = []
 
     def handle_sink(self, msg):
+        worker_id = msg.get('worker_id')
+        self.worker_map.setdefault(worker_id, {})['last_seen'] = time.time()
+
         if isinstance(msg, WorkerRegisterMessage):
-            tmp = {'last_seen': time.time(), 'wrm': msg}
-            worker_id = msg.get('worker_id')
-            self.worker_map[worker_id] = tmp
             logger.debug('Worker registered %s' % worker_id)
             for filename in msg.get('data_files', []):
                 self.files_map.setdefault(filename, set()).add(worker_id)
+            # Send an acknowledgment back to the worker
+            self.ventilator.send_multipart([worker_id, json.dumps(Message({'payload':'OK'}))])
             return
+
 
         # Every msg needs a token, otherwise we don't know who the reply goes to
         if 'token' not in msg:
-            logger.error('Every msg needs a token')
             return
         logger.debug('Sink received %s' % msg.get('token', '?'))
         self.rpc_results.append(msg)
@@ -185,7 +186,9 @@ class ControllerNode(object):
 
         # What kind of rpc calls can be made?
         data = {}
-        if msg['payload'] == 'info':
+        if msg['payload'] == 'ping':
+            data = 'pong'
+        elif msg['payload'] == 'info':
             data = {'msg_count': self.msg_count,
                     'workers': self.worker_map
                     }

@@ -1,6 +1,4 @@
-import os
 import json
-import binascii
 import cPickle
 
 def msg_factory(msg):
@@ -9,7 +7,8 @@ def msg_factory(msg):
     if not msg:
         return Message()
     msg_mapping = {'calc': CalcMessage, 'rpc': RPCMessage, 'error': ErrorMessage,
-                   'worker_register': WorkerRegisterMessage, None: Message}
+                   'worker_register': WorkerRegisterMessage,
+                   None: Message}
     msg_class = msg_mapping.get(msg.get('msg_type'))
     return msg_class(msg)
 
@@ -43,10 +42,6 @@ class Message(dict):
 
 class WorkerRegisterMessage(Message):
     msg_type = 'worker_register'
-
-    def __init__(self, *args, **kwargs):
-        super(WorkerRegisterMessage, self).__init__(*args, **kwargs)
-        self['worker_id'] = binascii.hexlify(os.urandom(8))
 
 
 class CalcMessage(Message):

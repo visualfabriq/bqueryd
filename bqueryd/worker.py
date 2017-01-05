@@ -7,12 +7,13 @@ import traceback
 import cPickle
 import logging
 import redis
-import bqueryd
+import binascii
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage
 
 DEFAULT_DATA_DIR = '/srv/bcolz/'
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
+POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
 bcolz.set_nthreads(1)
 
 logger = logging.getLogger('Worker')
@@ -22,33 +23,63 @@ class WorkerNode(object):
     def __init__(self, data_dir=DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0'):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
             raise Exception("Datadir %s is not a valid difrectory" % data_dir)
+        self.worker_id = binascii.hexlify(os.urandom(8))
         self.data_dir = data_dir
-        self.data_files = [filename for filename in os.listdir(self.data_dir) if
-                           filename.endswith(DATA_FILE_EXTENSION) or filename.endswith(DATA_SHARD_FILE_EXTENSION)]
+        self.data_files = set()
+        self.redis_url = redis_url
+        self.context = zmq.Context()
+        self.controllers = {} # Keep a dict of timestamps when you last spoke to controllers
+        self.check_controllers()
+
+
+    def check_controllers(self):
+        # Check the Redis set of controllers to see if any new ones have appeared,
+        # Also register with them if so.
+        current_controllers = [v['address'] for v in self.controllers.values()]
+        redis_server = redis.from_url(self.redis_url)
+        controllers = redis_server.smembers('bqueryd_controllers_sink')
+        new_controllers = [c for c in redis_server.smembers('bqueryd_controllers_sink') if c not in current_controllers]
+
+        for controller_address in new_controllers:
+            controller = self.context.socket(zmq.DEALER)
+            controller.setsockopt(zmq.LINGER, 0)
+            controller.identity = self.worker_id
+            controller.connect(controller_address)
+            self.controllers[controller] = {'last_seen': 0, 'last_sent': 0, 'address': controller_address}
+
+
+    def check_datafiles(self):
+        has_new_files = False
+        for data_file in [filename for filename in os.listdir(self.data_dir) if
+                          filename.endswith(DATA_FILE_EXTENSION) or filename.endswith(DATA_SHARD_FILE_EXTENSION)]:
+            if data_file not in self.data_files:
+                self.data_files.add(data_file)
+                has_new_files = True
         if len(self.data_files) < 1:
             logger.debug('Data directory %s has no files like %s or %s' % (
                 self.data_dir, DATA_FILE_EXTENSION, DATA_SHARD_FILE_EXTENSION))
+        return has_new_files
 
-        # Check the redis set of Controllers, and connect to all of them
-        redis_server = redis.from_url(redis_url)
-        controllers = redis_server.smembers('bqueryd_controllers_sink')
-        if not controllers:
-            raise Exception('No Controllers found in Redis set: bqueryd_controllers_sink')
 
-        self.context = zmq.Context()
+    def prepare_wrm(self):
         wrm = WorkerRegisterMessage()
-        self.worker_id = wrm['worker_id']
-        wrm['data_files'] = self.data_files
+        wrm['worker_id'] = self.worker_id
+        wrm['data_files'] = list(self.data_files)
         wrm['data_dir'] = self.data_dir
-        self.controllers = []
+        wrm['controllers'] = self.controllers.values()
+        return wrm
 
-        for controller_address in controllers:
-            # We receive operations to perform from the ventilator on the controller socket
-            controller = self.context.socket(zmq.DEALER)
-            controller.identity = self.worker_id
-            controller.connect(controller_address)
-            controller.send_json(wrm)
-            self.controllers.append(controller)
+
+    def heartbeat(self):
+        self.check_controllers()
+        has_new_files = self.check_datafiles()
+        wrm = self.prepare_wrm()
+
+        for controller, data in self.controllers.items():
+            if (data['last_sent'] == 0) or has_new_files:
+                controller.send_json(wrm)
+                data['last_sent'] = time.time()
+                logger.debug("WorkerRegistrationMessage to %s" % data['address'])
 
 
     def go(self):
@@ -58,13 +89,16 @@ class WorkerNode(object):
 
         self.running = True
         while self.running:
-            time.sleep(0.0001)  # give the system a breather to stop CPU usage being pegged at 100%
 
-            for sock, event in poller.poll():
+            self.heartbeat()
+
+            for sock, event in poller.poll(timeout=POLLING_TIMEOUT):
                 if event & zmq.POLLIN:
+                    data = self.controllers[sock]
+                    data['last_seen'] = time.time()
                     msg = sock.recv_json()
                     msg = msg_factory(msg)
-                    logger.debug('%s received msg %s' % (self.worker_id, msg.get('token', '?')))
+                    logger.debug('%s received from %s' % (self.worker_id, data['address']))
                     # TODO Notify Controllers that we are busy, no more messages to be sent
                     # The above busy notification is not perfect as other messages might be on their way already
                     # but for long-running queries it will at least ensure other controllers
@@ -75,7 +109,6 @@ class WorkerNode(object):
                         tmp = ErrorMessage(msg)
                         tmp['payload'] = traceback.format_exc()
                     sock.send_json(tmp)
-                    # TODO send a periodic heartbeat to the controller, in case of transience
         logger.debug('Stopping %s' % self.worker_id)
 
     def handle(self, msg):

@@ -16,17 +16,37 @@ class RPCError(Exception):
 class RPC(object):
     def __init__(self, ip='127.0.0.1', timeout=3600, redis_url='redis://127.0.0.1:6379/0'):
         self.context = zmq.Context()
-        self.controller = self.context.socket(zmq.REQ)
-        self.controller.setsockopt(zmq.RCVTIMEO, timeout*1000)
-        self.controller.setsockopt(zmq.LINGER, 0)
-
         # Bind to a random controller
         redis_server = redis.from_url(redis_url)
-        controllers = redis_server.smembers('bqueryd_controllers_rpc')
+        controllers = list(redis_server.smembers('bqueryd_controllers_rpc'))
         if len(controllers) < 1:
             raise Exception('No Controllers found in Redis set: bqueryd_controllers_rpc')
+        random.shuffle(controllers)
 
-        self.controller.connect(random.choice(list(controllers)))
+        reply = None
+        for c in controllers:
+            logger.debug('Trying RPC to %s' % c)
+            tmp_sock = self.context.socket(zmq.REQ)
+            tmp_sock.setsockopt(zmq.RCVTIMEO, 500)
+            tmp_sock.setsockopt(zmq.LINGER, 0)
+            tmp_sock.connect(c)
+            # first ping the controller to see if it respnds at all
+            msg = RPCMessage({'payload': 'ping'})
+            tmp_sock.send_json(msg)
+            try:
+                reply = msg_factory(tmp_sock.recv_json())
+                break
+            except:
+                continue
+        if reply:
+            # Now set the timeout to the actual requested
+            self.controller = self.context.socket(zmq.REQ)
+            self.controller.setsockopt(zmq.RCVTIMEO, timeout*1000)
+            self.controller.setsockopt(zmq.LINGER, 0)
+            self.controller.connect(c)
+        else:
+            raise Exception('No controller connection')
+
 
     def __getattr__(self, name):
         def _rpc(*args, **kwargs):
