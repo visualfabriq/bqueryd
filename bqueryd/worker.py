@@ -79,7 +79,7 @@ class WorkerNode(object):
             if (data['last_sent'] == 0) or has_new_files:
                 controller.send_json(wrm)
                 data['last_sent'] = time.time()
-                logger.debug("WorkerRegistrationMessage to %s" % data['address'])
+                logger.debug("registered to %s" % data['address'])
 
 
     def go(self):
