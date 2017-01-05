@@ -12,6 +12,7 @@ from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorM
 from bqueryd.util import get_my_ip
 logger = logging.getLogger('Controller')
 
+DEAD_WORKER_TIMEOUT = 10 * 60 # time in seconds that we wait for a worker to respond before being removed
 
 class ControllerNode(object):
     def __init__(self, redis_url='redis://127.0.0.1:6379/0'):
@@ -39,6 +40,7 @@ class ControllerNode(object):
         self.files_map = {}  # shows on which workers a file is available on
         self.outgoing_messages = []
 
+
     def handle_sink(self, msg):
         worker_id = msg.get('worker_id')
         self.worker_map.setdefault(worker_id, {})['last_seen'] = time.time()
@@ -58,12 +60,25 @@ class ControllerNode(object):
         logger.debug('Sink received %s' % msg.get('token', '?'))
         self.rpc_results.append(msg)
 
+
     def find_free_worker(self):
         # Pick a random worker_id to send a message to for now, TODO add some kind of load-balancing & affinity
-        free_workers = [worker_id for worker_id, worker in self.worker_map.items() if 'last_msg' not in worker]
+        free_workers = [worker_id for worker_id, worker in self.worker_map.items() if 'last_sent' not in worker]
         if not free_workers:
             return None
         return random.choice(free_workers)
+
+
+    def free_dead_workers(self):
+        now = time.time()
+        for worker_id, worker in self.worker_map.items():
+            if now - worker.get('last_sent', now) > DEAD_WORKER_TIMEOUT:
+                logger.debug("Removing worker %s" % worker_id)
+                del self.worker_map[worker_id]
+                for worker_set in self.files_map.values():
+                    if worker_id in worker_set:
+                        worker_set.remove(worker_id)
+
 
     def go(self):
         self.poller = zmq.Poller()
@@ -76,7 +91,7 @@ class ControllerNode(object):
         self.running = True
         while self.running:
             try:
-                time.sleep(0.0001)  # give the system a breather to stop CPU usage being pegged at 100%
+                self.free_dead_workers()
                 socks = dict(self.poller.poll())
 
                 if socks.get(self.ventilator) & zmq.POLLIN:
@@ -85,8 +100,8 @@ class ControllerNode(object):
                     msg = msg_factory(msg)
                     msg['worker_id'] = worker_id
                     self.handle_sink(msg)
-                    if 'last_msg' in self.worker_map.get(worker_id, {}):
-                        del self.worker_map[worker_id]['last_msg']
+                    if 'last_sent' in self.worker_map.get(worker_id, {}):
+                        del self.worker_map[worker_id]['last_sent']
                     self.msg_count += 1
                 if socks.get(self.ventilator) & zmq.POLLOUT:
                     while self.outgoing_messages:
@@ -98,7 +113,7 @@ class ControllerNode(object):
                         msg = self.outgoing_messages.pop()
                         # Send a calc message to the workers on the ventilator for the number of shards for this filename
                         # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
-                        self.worker_map[worker_id]['last_msg'] = time.time()
+                        self.worker_map[worker_id]['last_sent'] = time.time()
                         self.ventilator.send_multipart([worker_id, json.dumps(msg)])
 
                 if socks.get(self.rpc) & zmq.POLLIN:
