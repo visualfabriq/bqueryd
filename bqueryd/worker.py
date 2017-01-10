@@ -8,12 +8,13 @@ import cPickle
 import logging
 import redis
 import binascii
-from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage
+from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, Message, StopMessage
 
 DEFAULT_DATA_DIR = '/srv/bcolz/'
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
+WRM_DELAY = 5 # how often in seconds to send a WorkerRegisterMessage
 bcolz.set_nthreads(1)
 
 logger = logging.getLogger('Worker')
@@ -26,19 +27,28 @@ class WorkerNode(object):
         self.worker_id = binascii.hexlify(os.urandom(8))
         self.data_dir = data_dir
         self.data_files = set()
-        self.redis_url = redis_url
         self.context = zmq.Context()
+        self.redis_server = redis.from_url(redis_url)
         self.controllers = {} # Keep a dict of timestamps when you last spoke to controllers
+        self.poller = zmq.Poller()
         self.check_controllers()
+        self.last_wrm = time.time()
 
 
     def check_controllers(self):
         # Check the Redis set of controllers to see if any new ones have appeared,
         # Also register with them if so.
-        current_controllers = [v['address'] for v in self.controllers.values()]
-        redis_server = redis.from_url(self.redis_url)
-        controllers = redis_server.smembers('bqueryd_controllers_sink')
-        new_controllers = [c for c in redis_server.smembers('bqueryd_controllers_sink') if c not in current_controllers]
+        listed_controllers = list(self.redis_server.smembers('bqueryd_controllers_sink'))
+        current_controllers = []
+        new_controllers = []
+        for k,v in self.controllers.items():
+            if v['address'] not in listed_controllers:
+                del self.controllers[k]
+                self.poller.unregister(k)
+            else:
+                current_controllers.append(v['address'])
+
+        new_controllers = [c for c in listed_controllers if c not in current_controllers]
 
         for controller_address in new_controllers:
             controller = self.context.socket(zmq.DEALER)
@@ -46,7 +56,7 @@ class WorkerNode(object):
             controller.identity = self.worker_id
             controller.connect(controller_address)
             self.controllers[controller] = {'last_seen': 0, 'last_sent': 0, 'address': controller_address}
-
+            self.poller.register(controller, zmq.POLLIN)
 
     def check_datafiles(self):
         has_new_files = False
@@ -71,28 +81,27 @@ class WorkerNode(object):
 
 
     def heartbeat(self):
-        self.check_controllers()
-        has_new_files = self.check_datafiles()
-        wrm = self.prepare_wrm()
-
-        for controller, data in self.controllers.items():
-            if (data['last_sent'] == 0) or has_new_files:
-                controller.send_json(wrm)
-                data['last_sent'] = time.time()
-                logger.debug("registered to %s" % data['address'])
+        since_last_wrm = time.time() - self.last_wrm
+        if since_last_wrm > WRM_DELAY:
+            self.check_controllers()
+            has_new_files = self.check_datafiles()
+            self.last_wrm = time.time()
+            wrm = self.prepare_wrm()
+            for controller, data in self.controllers.items():
+                if has_new_files or (time.time() - data['last_seen'] > WRM_DELAY):
+                    controller.send_json(wrm)
+                    data['last_sent'] = time.time()
+                    logger.debug("register to %s" % data['address'])
 
 
     def go(self):
-        poller = zmq.Poller()
-        for controller in self.controllers:
-            poller.register(controller, zmq.POLLIN)
 
         self.running = True
         while self.running:
 
             self.heartbeat()
 
-            for sock, event in poller.poll(timeout=POLLING_TIMEOUT):
+            for sock, event in self.poller.poll(timeout=POLLING_TIMEOUT):
                 if event & zmq.POLLIN:
                     data = self.controllers[sock]
                     data['last_seen'] = time.time()
@@ -100,6 +109,7 @@ class WorkerNode(object):
                     msg = msg_factory(msg)
                     logger.debug('%s received from %s' % (self.worker_id, data['address']))
                     # TODO Notify Controllers that we are busy, no more messages to be sent
+                    self.send_to_all_except_own(sock, BusyMessage())
                     # The above busy notification is not perfect as other messages might be on their way already
                     # but for long-running queries it will at least ensure other controllers
                     # don't try and overuse this node by filling up a queue
@@ -109,9 +119,16 @@ class WorkerNode(object):
                         tmp = ErrorMessage(msg)
                         tmp['payload'] = traceback.format_exc()
                     sock.send_json(tmp)
+                    self.send_to_all_except_own(sock, Message()) # Send an empty mesage to all controllers, this flags you as 'Done'
         logger.debug('Stopping %s' % self.worker_id)
 
+    def send_to_all_except_own(self, sock, msg):
+        for controller in self.controllers:
+            if not controller is sock:
+                controller.send_json(msg)
+
     def handle(self, msg):
+        buf = '' # placeholder results buffer
         params = msg.get('params', {})
         if params:
             tmp = params.decode('base64')
@@ -120,8 +137,13 @@ class WorkerNode(object):
         args = params.get('args', [])
 
         if msg.get('payload') == 'kill':
+            # Also send a message to all your controllers, that you are stopping
+            for controller in self.controllers:
+                controller.send_json(StopMessage())
             self.running = False
             return
+        elif msg.get('payload') == 'info':
+            msg = self.prepare_wrm()
         elif msg.get('payload') == 'sleep':
             time.sleep(float(args[0]))
             buf = 'zzzzz'
