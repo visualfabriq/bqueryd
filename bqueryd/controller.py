@@ -8,11 +8,11 @@ import json
 import random
 import pandas as pd
 import redis
-from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage
+from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage
 from bqueryd.util import get_my_ip
 logger = logging.getLogger('Controller')
 
-DEAD_WORKER_TIMEOUT = 10 * 60 # time in seconds that we wait for a worker to respond before being removed
+DEAD_WORKER_TIMEOUT = 1 * 60 # time in seconds that we wait for a worker to respond before being removed
 
 class ControllerNode(object):
     def __init__(self, redis_url='redis://127.0.0.1:6379/0'):
@@ -43,6 +43,14 @@ class ControllerNode(object):
 
     def handle_sink(self, msg):
         worker_id = msg.get('worker_id')
+        # Note that the worker_id keys in self.worker_map should be the binary string id,
+        # not the hex version sent in the messages
+
+        # TODO If worker not in worker_map due to a dead_worker cull (calculation too a long time...)
+        # request a new WorkerRegisterMessage from that worker...
+        if worker_id not in self.worker_map:
+            self.ventilator.send_multipart([worker_id, json.dumps(Message({'payload': 'info'}))])
+
         self.worker_map.setdefault(worker_id, {})['last_seen'] = time.time()
 
         if isinstance(msg, WorkerRegisterMessage):
@@ -50,9 +58,13 @@ class ControllerNode(object):
             for filename in msg.get('data_files', []):
                 self.files_map.setdefault(filename, set()).add(worker_id)
             # Send an acknowledgment back to the worker
-            self.ventilator.send_multipart([worker_id, json.dumps(Message({'payload':'OK'}))])
+            # self.ventilator.send_multipart([worker_id, json.dumps(Message({'payload':'OK'}))])
             return
 
+        if isinstance(msg, BusyMessage):
+            logger.debug('Worker %s sent BusyMessage' % worker_id)
+            self.worker_map[worker_id]['last_sent'] = time.time()
+            return
 
         # Every msg needs a token, otherwise we don't know who the reply goes to
         if 'token' not in msg:
@@ -72,7 +84,7 @@ class ControllerNode(object):
     def free_dead_workers(self):
         now = time.time()
         for worker_id, worker in self.worker_map.items():
-            if now - worker.get('last_sent', now) > DEAD_WORKER_TIMEOUT:
+            if (now - worker.get('last_seen', now)) > DEAD_WORKER_TIMEOUT:
                 logger.debug("Removing worker %s" % worker_id)
                 del self.worker_map[worker_id]
                 for worker_set in self.files_map.values():
@@ -99,9 +111,9 @@ class ControllerNode(object):
                     worker_id, msg = buf[0], buf[1]
                     msg = msg_factory(msg)
                     msg['worker_id'] = worker_id
-                    self.handle_sink(msg)
                     if 'last_sent' in self.worker_map.get(worker_id, {}):
                         del self.worker_map[worker_id]['last_sent']
+                    self.handle_sink(msg)
                     self.msg_count += 1
                 if socks.get(self.ventilator) & zmq.POLLOUT:
                     while self.outgoing_messages:
@@ -111,7 +123,6 @@ class ControllerNode(object):
                             break
 
                         msg = self.outgoing_messages.pop()
-                        # Send a calc message to the workers on the ventilator for the number of shards for this filename
                         # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
                         self.worker_map[worker_id]['last_sent'] = time.time()
                         self.ventilator.send_multipart([worker_id, json.dumps(msg)])
@@ -212,14 +223,19 @@ class ControllerNode(object):
             msg.add_as_binary('result', 'OK')
             self.rpc_results.append(msg)
             self.kill()
-        elif msg['payload'] in ('groupby', 'sleep'):
+        elif msg['payload'] in ('groupby',):
             data = self.handle_calc_message(msg)
+        elif msg['payload'] in ('sleep', 'ping'):
+            self.handle_message(msg)
         else:
             data = "Sorry, I don't understand you"
 
         if data:
             msg.add_as_binary('result', data)
             self.rpc_results.append(msg)
+
+    def handle_message(self, msg):
+        self.outgoing_messages(msg.copy())
 
     def handle_calc_message(self, msg):
         # Store the original message in the buf
