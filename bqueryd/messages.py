@@ -7,7 +7,7 @@ def msg_factory(msg):
     if not msg:
         return Message()
     msg_mapping = {'calc': CalcMessage, 'rpc': RPCMessage, 'error': ErrorMessage,
-                   'worker_register': WorkerRegisterMessage,
+                   'worker_register': WorkerRegisterMessage, 'busy': BusyMessage, 'stop': StopMessage,
                    None: Message}
     msg_class = msg_mapping.get(msg.get('msg_type'))
     return msg_class(msg)
@@ -54,3 +54,11 @@ class RPCMessage(Message):
 
 class ErrorMessage(Message):
     msg_type = 'error'
+
+
+class BusyMessage(Message):
+    msg_type = 'busy'
+
+
+class StopMessage(Message):
+    msg_type = 'stop'
