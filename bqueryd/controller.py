@@ -8,14 +8,14 @@ import json
 import random
 import pandas as pd
 import redis
+import bqueryd
 from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage
 from bqueryd.util import get_my_ip
-logger = logging.getLogger('Controller')
 
 DEAD_WORKER_TIMEOUT = 1 * 60 # time in seconds that we wait for a worker to respond before being removed
 
 class ControllerNode(object):
-    def __init__(self, redis_url='redis://127.0.0.1:6379/0'):
+    def __init__(self, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG):
         self.redis_url = redis_url
         redis_server = redis.from_url(redis_url)
         self.context = zmq.Context()
@@ -23,15 +23,16 @@ class ControllerNode(object):
         self.rpc = self.context.socket(zmq.ROUTER)
         port_selected = self.rpc.bind_to_random_port('tcp://*', min_port=14300, max_port=14399, max_tries=100)
         self.rpc_address = 'tcp://%s:%s' % (get_my_ip(), port_selected)
+        self.logger = bqueryd.logger.getChild('controller ' + self.rpc_address)
+        self.logger.setLevel(loglevel)
         redis_server.sadd('bqueryd_controllers_rpc', self.rpc_address)
-        logger.debug('RPC Address %s' % self.rpc_address)
 
         self.ventilator = self.context.socket(zmq.ROUTER)
         port_selected = self.ventilator.bind_to_random_port('tcp://*', min_port=14400, max_port=14499, max_tries=100)
         r = redis.from_url(redis_url)
         self.sink_address = 'tcp://%s:%s' % (get_my_ip(), port_selected)
         redis_server.sadd('bqueryd_controllers_sink', self.sink_address)
-        logger.debug('Sink Address %s' % self.sink_address)
+        self.logger.debug('Sink Address %s' % self.sink_address)
 
         self.msg_count = 0
         self.rpc_results = []  # buffer of results that are ready to be returned to callers
@@ -54,7 +55,7 @@ class ControllerNode(object):
         self.worker_map.setdefault(worker_id, {})['last_seen'] = time.time()
 
         if isinstance(msg, WorkerRegisterMessage):
-            logger.debug('Worker registered %s' % worker_id)
+            self.logger.debug('Worker registered %s' % worker_id)
             for filename in msg.get('data_files', []):
                 self.files_map.setdefault(filename, set()).add(worker_id)
             # Send an acknowledgment back to the worker
@@ -62,14 +63,14 @@ class ControllerNode(object):
             return
 
         if isinstance(msg, BusyMessage):
-            logger.debug('Worker %s sent BusyMessage' % worker_id)
+            self.logger.debug('Worker %s sent BusyMessage' % worker_id)
             self.worker_map[worker_id]['last_sent'] = time.time()
             return
 
         # Every msg needs a token, otherwise we don't know who the reply goes to
         if 'token' not in msg:
             return
-        logger.debug('Sink received %s' % msg.get('token', '?'))
+        self.logger.debug('Sink received %s' % msg.get('token', '?'))
         self.rpc_results.append(msg)
 
 
@@ -85,7 +86,7 @@ class ControllerNode(object):
         now = time.time()
         for worker_id, worker in self.worker_map.items():
             if (now - worker.get('last_seen', now)) > DEAD_WORKER_TIMEOUT:
-                logger.debug("Removing worker %s" % worker_id)
+                self.logger.debug("Removing worker %s" % worker_id)
                 del self.worker_map[worker_id]
                 for worker_set in self.files_map.values():
                     if worker_id in worker_set:
@@ -97,7 +98,7 @@ class ControllerNode(object):
         self.poller.register(self.ventilator, zmq.POLLIN | zmq.POLLOUT)
         self.poller.register(self.rpc, zmq.POLLIN | zmq.POLLOUT)
 
-        logger.debug('Started')
+        self.logger.debug('Started')
 
         socks = {}
         self.running = True
@@ -117,6 +118,8 @@ class ControllerNode(object):
                     self.msg_count += 1
                 if socks.get(self.ventilator) & zmq.POLLOUT:
                     while self.outgoing_messages:
+                        #Assumption now is that all workers can serve requests to all files,
+                        #TODO We need to change the find_free_worker to take the requested filename into account
                         # find a worker that is free
                         worker_id = self.find_free_worker()
                         if not worker_id:
@@ -132,19 +135,19 @@ class ControllerNode(object):
                     msg_id = binascii.hexlify(buf[0])
                     msg = json.loads(buf[2])
                     msg['token'] = msg_id
-                    logger.debug('RPC received %s' % msg_id)
+                    self.logger.debug('RPC received %s' % msg_id)
                     msg = msg_factory(msg)
                     self.handle_rpc(msg)
                 if socks.get(self.rpc) & zmq.POLLOUT:
                     self.process_sink_results()
 
             except KeyboardInterrupt:
-                logger.debug('Stopped from keyboard')
+                self.logger.debug('Stopped from keyboard')
                 self.kill()
             except:
-                logger.error("Exception %s" % traceback.format_exc())
+                self.logger.error("Exception %s" % traceback.format_exc())
 
-        logger.debug('Stopping')
+        self.logger.debug('Stopping')
 
     def kill(self):
         # Send a kill message to each of our workers
@@ -168,7 +171,7 @@ class ControllerNode(object):
                 original_rpc = self.rpc_segments.get(parent_token)
 
                 if isinstance(msg, ErrorMessage):
-                    logger.debug('Errormesssage %s' % msg.get('payload'))
+                    self.logger.debug('Errormesssage %s' % msg.get('payload'))
                     # Delete this entire message segments, if it still exists
                     if parent_token in self.rpc_segments:
                         del self.rpc_segments[parent_token]
@@ -203,7 +206,7 @@ class ControllerNode(object):
             msg_id = binascii.unhexlify(msg.get('token'))
             tmp = [msg_id, '', json.dumps(msg)]
             self.rpc.send_multipart(tmp)
-            logger.debug('Msg handled %s' % msg.get('token', '?'))
+            self.logger.debug('Msg handled %s' % msg.get('token', '?'))
 
     def handle_rpc(self, msg):
         # Every msg needs a token, otherwise we don't know wo the reply goes to
