@@ -5,9 +5,10 @@ import bquery
 import bcolz
 import traceback
 import cPickle
-import logging
 import redis
 import binascii
+import logging
+import bqueryd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, Message, StopMessage
 
 DEFAULT_DATA_DIR = '/srv/bcolz/'
@@ -17,11 +18,10 @@ POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, thi
 WRM_DELAY = 5 # how often in seconds to send a WorkerRegisterMessage
 bcolz.set_nthreads(1)
 
-logger = logging.getLogger('Worker')
 
 class WorkerNode(object):
 
-    def __init__(self, data_dir=DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0'):
+    def __init__(self, data_dir=DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
             raise Exception("Datadir %s is not a valid difrectory" % data_dir)
         self.worker_id = binascii.hexlify(os.urandom(8))
@@ -33,6 +33,8 @@ class WorkerNode(object):
         self.poller = zmq.Poller()
         self.check_controllers()
         self.last_wrm = time.time()
+        self.logger = bqueryd.logger.getChild('worker '+self.worker_id)
+        self.logger.setLevel(loglevel)
 
 
     def check_controllers(self):
@@ -66,7 +68,7 @@ class WorkerNode(object):
                 self.data_files.add(data_file)
                 has_new_files = True
         if len(self.data_files) < 1:
-            logger.debug('Data directory %s has no files like %s or %s' % (
+            self.logger.debug('Data directory %s has no files like %s or %s' % (
                 self.data_dir, DATA_FILE_EXTENSION, DATA_SHARD_FILE_EXTENSION))
         return has_new_files
 
@@ -91,7 +93,7 @@ class WorkerNode(object):
                 if has_new_files or (time.time() - data['last_seen'] > WRM_DELAY):
                     controller.send_json(wrm)
                     data['last_sent'] = time.time()
-                    logger.debug("register to %s" % data['address'])
+                    self.logger.debug("register to %s" % data['address'])
 
 
     def go(self):
@@ -107,7 +109,7 @@ class WorkerNode(object):
                     data['last_seen'] = time.time()
                     msg = sock.recv_json()
                     msg = msg_factory(msg)
-                    logger.debug('%s received from %s' % (self.worker_id, data['address']))
+                    self.logger.debug('%s received from %s' % (self.worker_id, data['address']))
                     # TODO Notify Controllers that we are busy, no more messages to be sent
                     self.send_to_all_except_own(sock, BusyMessage())
                     # The above busy notification is not perfect as other messages might be on their way already
@@ -120,7 +122,7 @@ class WorkerNode(object):
                         tmp['payload'] = traceback.format_exc()
                     sock.send_json(tmp)
                     self.send_to_all_except_own(sock, Message()) # Send an empty mesage to all controllers, this flags you as 'Done'
-        logger.debug('Stopping %s' % self.worker_id)
+        self.logger.debug('Stopping %s' % self.worker_id)
 
     def send_to_all_except_own(self, sock, msg):
         for controller in self.controllers:
@@ -129,12 +131,7 @@ class WorkerNode(object):
 
     def handle(self, msg):
         buf = '' # placeholder results buffer
-        params = msg.get('params', {})
-        if params:
-            tmp = params.decode('base64')
-            params = cPickle.loads(tmp)
-        kwargs = params.get('kwargs', {})
-        args = params.get('args', [])
+        args, kwargs = msg.get_args_kwargs()
 
         if msg.get('payload') == 'kill':
             # Also send a message to all your controllers, that you are stopping
