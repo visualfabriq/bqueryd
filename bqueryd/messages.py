@@ -1,9 +1,13 @@
 import json
 import cPickle
+import time
 
 def msg_factory(msg):
     if type(msg) is str:
-        msg = json.loads(msg)
+        try:
+            msg = json.loads(msg)
+        except:
+            msg is None
     if not msg:
         return Message()
     msg_mapping = {'calc': CalcMessage, 'rpc': RPCMessage, 'error': ErrorMessage,
@@ -27,6 +31,7 @@ class Message(dict):
         self['payload'] = datadict.get('payload')
         self['version'] = datadict.get('version', 1)
         self['msg_type'] = self.msg_type
+        self['created'] = time.time()
 
     def add_as_binary(self, key, value):
         self[key] = cPickle.dumps(value).encode('base64')
@@ -39,6 +44,14 @@ class Message(dict):
     def to_json(self):
         return json.dumps(self)
 
+    def get_args_kwargs(self):
+        params = self.get('params', {})
+        if params:
+            tmp = params.decode('base64')
+            params = cPickle.loads(tmp)
+        kwargs = params.get('kwargs', {})
+        args = params.get('args', [])
+        return args, kwargs
 
 class WorkerRegisterMessage(Message):
     msg_type = 'worker_register'
