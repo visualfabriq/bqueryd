@@ -13,6 +13,7 @@ import binascii
 import logging
 import random
 import bqueryd
+import socket
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, DoneMessage
 
 DATA_FILE_EXTENSION = '.bcolz'
@@ -33,6 +34,7 @@ class WorkerNode(object):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
             raise Exception("Datadir %s is not a valid difrectory" % data_dir)
         self.worker_id = binascii.hexlify(os.urandom(8))
+        self.node_name = socket.gethostname()
         self.data_dir = data_dir
         self.data_files = set()
         context = zmq.Context()
@@ -81,6 +83,7 @@ class WorkerNode(object):
     def prepare_wrm(self):
         wrm = WorkerRegisterMessage()
         wrm['worker_id'] = self.worker_id
+        wrm['node'] = self.node_name
         wrm['data_files'] = list(self.data_files)
         wrm['data_dir'] = self.data_dir
         wrm['controllers'] = self.controllers.values()

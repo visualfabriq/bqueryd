@@ -34,6 +34,10 @@ class Message(dict):
         self['msg_type'] = self.msg_type
         self['created'] = time.time()
 
+    def copy(self):
+        newme = super(Message, self).copy()
+        return msg_factory(newme)
+
     def isa(self, payload_or_instance):
         if self.msg_type == getattr(payload_or_instance, 'msg_type', '_'):
             return True

@@ -4,7 +4,6 @@ import logging
 import binascii
 import traceback
 import json
-import multiprocessing
 import random
 import os
 import socket
@@ -82,11 +81,15 @@ class ControllerNode(object):
                 except zmq.error.ZMQError, e:
                     self.logger.exception(e)
 
-
     def heartbeat(self):
         if time.time() - self.last_heartbeat > HEARTBEAT_INTERVAL:
             self.connect_to_others()
             self.last_heartbeat = time.time()
+
+    def find_local_worker(self):
+        tmp = [worker_id for worker_id, worker in self.worker_map.items() if worker.get('node') == self.node_name]
+        if tmp:
+            return tmp[0]
 
     def find_free_worker(self):
         # Pick a random worker_id to send a message to for now, TODO add some kind of load-balancing & affinity
@@ -146,19 +149,24 @@ class ControllerNode(object):
         self.process_sink_results()
 
         while self.worker_out_messages:
-            # Assumption now is that all workers can serve requests to all files,
-            # TODO We need to change the find_free_worker to take the requested filename into account
-            # find a worker that is free
-            worker_id = self.find_free_worker()
-            if not worker_id:
-                self.logger.debug('No free workers at this time')
-                break
 
             msg = self.worker_out_messages.pop()
+            if 'worker_id' in msg:
+                worker_id = msg['worker_id']
+            else:
+                # Assumption now is that all workers can serve requests to all files,
+                # TODO We need to change the find_free_worker to take the requested filename into account
+                # find a worker that is free
+                worker_id = self.find_free_worker()
+                if not worker_id:
+                    self.logger.debug('No free workers at this time')
+                    self.worker_out_messages.append(msg)
+                    break
+
             # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
             self.worker_map[worker_id]['last_sent'] = time.time()
             self.worker_map[worker_id]['busy'] = True
-            self.send(worker_id, json.dumps(msg))
+            self.send(worker_id, msg.to_json())
 
     def handle_in(self):
         self.msg_count_in += 1
@@ -168,9 +176,21 @@ class ControllerNode(object):
             self.handle_rpc(sender, msg_factory(msg_buf))
         elif len(data) == 2: # This is an internode call from another zmq.ROUTER, a Controller or Worker
             sender, msg_buf = data
-            self.handle_peer(sender, msg_factory(msg_buf))
+            msg = msg_factory(msg_buf)
+            if sender in self.others:
+                self.handle_peer(sender, msg)
+            else:
+                self.handle_worker(sender, msg)
 
-    def handle_peer(self, worker_id, msg):
+    def handle_peer(self, sender, msg):
+        self.logger.debug('****** %s' % msg)
+        if msg.isa('download'):
+            self.handle_download(msg)
+        else:
+            self.logger.debug("Got a msg but don't know what to do with it %s" % msg)
+
+    def handle_worker(self, worker_id, msg):
+
         # TODO Make a distinction on the kind of message received and act accordingly
         msg['worker_id'] = worker_id
 
@@ -185,6 +205,7 @@ class ControllerNode(object):
             self.logger.debug('Worker registered %s' % worker_id)
             for filename in msg.get('data_files', []):
                 self.files_map.setdefault(filename, set()).add(worker_id)
+            self.worker_map[worker_id]['node'] = msg['node']
             return
 
         if msg.isa(BusyMessage):
@@ -225,7 +246,13 @@ class ControllerNode(object):
             result = self.kill()
         elif msg.isa('killworkers'):
             result = self.killworkers()
-        elif msg['payload'] in ('download', 'sleep'):
+        elif msg.isa('download'):
+            for o in self.others:
+                mm = msg.copy()
+                del mm['token']
+                self.send(o, mm.to_json())
+            result = self.handle_download(msg)
+        elif msg['payload'] in ('sleep',):
             self.worker_out_messages.append(msg.copy())
             result = None
         elif msg['payload'] in ('groupby',):
@@ -234,6 +261,15 @@ class ControllerNode(object):
         if result:
             msg.add_as_binary('result', result)
             self.rpc_results.append(msg)
+
+    def handle_download(self, msg):
+        # the caller either wants to wait for the entire download to be done,
+        # or get a ticket and get to query with status updates
+        a_local = self.find_local_worker()
+        if not a_local:
+            raise Exception('No local worker found for download message!')
+        msg['worker_id'] = a_local
+        self.worker_out_messages.append(msg)
 
     def handle_calc_message(self, msg):
         args, kwargs = msg.get_args_kwargs()
@@ -270,7 +306,6 @@ class ControllerNode(object):
             self.worker_out_messages.append(msg.copy())
 
         self.rpc_segments[parent_token] = rpc_segment
-
 
     def kill(self):
         #unregister with the Redis set
