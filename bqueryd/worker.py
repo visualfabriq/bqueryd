@@ -6,17 +6,19 @@ import bcolz
 import traceback
 import tempfile
 import zipfile
+import shutil
 import boto
 import redis
 import binascii
 import logging
+import random
 import bqueryd
-from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, Message, StopMessage
+from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, DoneMessage
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
-WRM_DELAY = 60 # how often in seconds to send a WorkerRegisterMessage
+WRM_DELAY = 5 # how often in seconds to send a WorkerRegisterMessage
 bcolz.set_nthreads(1)
 INCOMING = os.path.join(bqueryd.DEFAULT_DATA_DIR, 'incoming')
 READY = os.path.join(bqueryd.DEFAULT_DATA_DIR, 'ready')
@@ -33,15 +35,18 @@ class WorkerNode(object):
         self.worker_id = binascii.hexlify(os.urandom(8))
         self.data_dir = data_dir
         self.data_files = set()
-        self.context = zmq.Context()
+        context = zmq.Context()
+        self.socket = context.socket(zmq.ROUTER)
+        self.socket.setsockopt(zmq.LINGER, 0)
+        self.socket.identity = self.worker_id
         self.redis_server = redis.from_url(redis_url)
         self.controllers = {} # Keep a dict of timestamps when you last spoke to controllers
         self.poller = zmq.Poller()
+        self.poller.register(self.socket, zmq.POLLIN)
         self.check_controllers()
-        self.last_wrm = time.time()
+        self.last_wrm = 0
         self.logger = bqueryd.logger.getChild('worker '+self.worker_id)
         self.logger.setLevel(loglevel)
-
 
     def check_controllers(self):
         # Check the Redis set of controllers to see if any new ones have appeared,
@@ -49,22 +54,17 @@ class WorkerNode(object):
         listed_controllers = list(self.redis_server.smembers(bqueryd.REDIS_SET_KEY))
         current_controllers = []
         new_controllers = []
-        for k,v in self.controllers.items():
-            if v['address'] not in listed_controllers:
+        for k in self.controllers.keys()[:]:
+            if k not in listed_controllers:
                 del self.controllers[k]
-                self.poller.unregister(k)
+                self.socket.disconnect(k)
             else:
-                current_controllers.append(v['address'])
+                current_controllers.append(k)
 
         new_controllers = [c for c in listed_controllers if c not in current_controllers]
-
         for controller_address in new_controllers:
-            controller = self.context.socket(zmq.DEALER)
-            controller.setsockopt(zmq.LINGER, 0)
-            controller.identity = self.worker_id
-            controller.connect(controller_address)
-            self.controllers[controller] = {'last_seen': 0, 'last_sent': 0, 'address': controller_address}
-            self.poller.register(controller, zmq.POLLIN)
+            self.socket.connect(controller_address)
+            self.controllers[controller_address] = {'last_seen': 0, 'last_sent': 0, 'address': controller_address}
 
     def check_datafiles(self):
         has_new_files = False
@@ -78,7 +78,6 @@ class WorkerNode(object):
                 self.data_dir, DATA_FILE_EXTENSION, DATA_SHARD_FILE_EXTENSION))
         return has_new_files
 
-
     def prepare_wrm(self):
         wrm = WorkerRegisterMessage()
         wrm['worker_id'] = self.worker_id
@@ -86,7 +85,6 @@ class WorkerNode(object):
         wrm['data_dir'] = self.data_dir
         wrm['controllers'] = self.controllers.values()
         return wrm
-
 
     def heartbeat(self):
         since_last_wrm = time.time() - self.last_wrm
@@ -97,10 +95,9 @@ class WorkerNode(object):
             wrm = self.prepare_wrm()
             for controller, data in self.controllers.items():
                 if has_new_files or (time.time() - data['last_seen'] > WRM_DELAY):
-                    controller.send_json(wrm)
+                    self.socket.send_multipart([controller, wrm.to_json()])
                     data['last_sent'] = time.time()
                     self.logger.debug("heartbeat to %s" % data['address'])
-
 
     def go(self):
 
@@ -109,13 +106,22 @@ class WorkerNode(object):
             self.heartbeat()
             for sock, event in self.poller.poll(timeout=POLLING_TIMEOUT):
                 if event & zmq.POLLIN:
-                    data = self.controllers[sock]
+                    tmp = self.socket.recv_multipart()
+                    if len(tmp) != 2:
+                        self.logger.critical('Received a msg with len != 2, something seriously wrong. ')
+                        continue
+                    sender, msg_buf = tmp
+                    msg = msg_factory(msg_buf)
+
+                    data = self.controllers.get(sender)
+                    if not data:
+                        self.logger.critical('Received a msg from %s - this is an unknown sender' % sender)
+                        continue
                     data['last_seen'] = time.time()
-                    msg = sock.recv_json()
-                    msg = msg_factory(msg)
-                    self.logger.debug('%s received from %s' % (self.worker_id, data['address']))
+
+                    self.logger.debug('Received from %s' % sender)
                     # TODO Notify Controllers that we are busy, no more messages to be sent
-                    self.send_to_all_except_own(sock, BusyMessage())
+                    self.send_to_all(BusyMessage())
                     # The above busy notification is not perfect as other messages might be on their way already
                     # but for long-running queries it will at least ensure other controllers
                     # don't try and overuse this node by filling up a queue
@@ -124,19 +130,18 @@ class WorkerNode(object):
                     except Exception, e:
                         tmp = ErrorMessage(msg)
                         tmp['payload'] = traceback.format_exc()
-                    sock.send_json(tmp)
-                    self.send_to_all_except_own(sock, Message()) # Send an empty mesage to all controllers, this flags you as 'Done'
-        self.logger.debug('Stopping %s' % self.worker_id)
+                    self.send_to_all(DoneMessage()) # Send an empty mesage to all controllers, this flags you as 'Done'
+                    if tmp:
+                        self.socket.send_multipart([sender, tmp.to_json()])
+        self.logger.debug('Stopping')
 
-    def send_to_all_except_own(self, sock, msg):
+    def send_to_all(self, msg):
         for controller in self.controllers:
-            if not controller is sock:
-                controller.send_json(msg)
+            self.socket.send_multipart([controller, msg.to_json()])
 
     def handle_calc(self, msg):
-        self.logger('doing calc %s' % args)
-
         args, kwargs = msg.get_args_kwargs()
+        self.logger.debug('doing calc %s' % args)
         filename = args[0]
         groupby_col_list = args[1]
         aggregation_list = args[2]
@@ -181,8 +186,7 @@ class WorkerNode(object):
 
     def file_downloader_callback(self, ticket):
         def _fn(progress, size):
-            self.
-            logger.debug('At %s of %s for %s' % (progress, size, ticket))
+            self.logger.debug('At %s of %s for %s' % (progress, size, ticket))
 
         return _fn
 
@@ -203,7 +207,7 @@ class WorkerNode(object):
         s3_bucket = s3_conn.get_bucket(bucket, validate=False)
         k = s3_bucket.get_key(filename, validate=False)
         fd, tmp_filename = tempfile.mkstemp(dir=INCOMING)
-        k.get_contents_to_filename(tmp_filename, cb=file_downloader_callback(ticket))
+        k.get_contents_to_filename(tmp_filename, cb=self.file_downloader_callback(ticket))
 
         # unzip the file to the signature
         temp_path = os.path.join(INCOMING, signature)
@@ -221,20 +225,26 @@ class WorkerNode(object):
             raise Exception('%s already exists' % dest_path)
         if os.path.exists(tmp_filename):
             os.remove(tmp_filename)
+        msg.add_as_binary('result', dest_path)
+        return msg
 
     def handle(self, msg):
-        if msg.is('kill'):
-            # Also send a message to all your controllers, that you are stopping
-            for controller in self.controllers:
-                controller.send_json(StopMessage())
+        if msg.isa('kill'):
             self.running = False
+            # Also send a message to all your controllers, that you are stopping
+            self.send_to_all(StopMessage())
+            for k in self.controllers:
+                self.socket.disconnect(k)
             return
-        elif msg.is('info'):
+        elif msg.isa('info'):
             msg = self.prepare_wrm()
-        elif msg.is('sleep'):
+        elif msg.isa('sleep'):
+            args, kwargs = msg.get_args_kwargs()
             time.sleep(float(args[0]))
-            msg.add_as_binary('result', 'zzzzz')
-        elif msg.is('download'):
+            snore = 'z'*random.randint(1,20)
+            self.logger.debug(snore)
+            msg.add_as_binary('result', snore)
+        elif msg.isa('download'):
             msg = self.handle_download(msg)
         else:
             msg = self.handle_calc(msg)

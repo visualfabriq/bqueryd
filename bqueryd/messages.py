@@ -11,8 +11,9 @@ def msg_factory(msg):
     if not msg:
         return Message()
     msg_mapping = {'calc': CalcMessage, 'rpc': RPCMessage, 'error': ErrorMessage,
-                   'worker_register': WorkerRegisterMessage, 'busy': BusyMessage, 'stop': StopMessage,
-                   None: Message}
+                   'worker_register': WorkerRegisterMessage,
+                   'busy': BusyMessage, 'done': DoneMessage,
+                   'stop': StopMessage, None: Message}
     msg_class = msg_mapping.get(msg.get('msg_type'))
     return msg_class(msg)
 
@@ -33,6 +34,13 @@ class Message(dict):
         self['msg_type'] = self.msg_type
         self['created'] = time.time()
 
+    def isa(self, payload_or_instance):
+        if self.msg_type == getattr(payload_or_instance, 'msg_type', '_'):
+            return True
+        if self.get('payload') == payload_or_instance:
+            return True
+        return False
+
     def add_as_binary(self, key, value):
         self[key] = cPickle.dumps(value).encode('base64')
 
@@ -42,6 +50,7 @@ class Message(dict):
         return cPickle.loads(buf.decode('base64'))
 
     def to_json(self):
+        # We could do some serializiation fixes in here for things like datetime or other binary non-json-serializabe members
         return json.dumps(self)
 
     def get_args_kwargs(self):
@@ -71,6 +80,10 @@ class ErrorMessage(Message):
 
 class BusyMessage(Message):
     msg_type = 'busy'
+
+
+class DoneMessage(Message):
+    msg_type = 'done'
 
 
 class StopMessage(Message):
