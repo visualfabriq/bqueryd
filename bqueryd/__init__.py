@@ -9,5 +9,4 @@ REDIS_SET_KEY = 'bqueryd_controllers'
 from rpc import RPC, RPCError
 from controller import ControllerNode
 from worker import WorkerNode
-from filemanager import FileManagerNode
 
