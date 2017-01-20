@@ -320,7 +320,7 @@ class ControllerNode(object):
         return 'hai!'
 
     def get_info(self):
-        data = {'msg_count_in': self.msg_count_in,
+        data = {'msg_count_in': self.msg_count_in, 'node': self.node_name,
                 'workers': self.worker_map,
                 'last_heartbeat': self.last_heartbeat, 'address': self.address,
                 'others': self.others
