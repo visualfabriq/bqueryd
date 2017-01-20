@@ -4,24 +4,30 @@ import zmq
 import bquery
 import bcolz
 import traceback
-import cPickle
+import tempfile
+import zipfile
+import boto
 import redis
 import binascii
 import logging
 import bqueryd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, Message, StopMessage
 
-DEFAULT_DATA_DIR = '/srv/bcolz/'
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
-WRM_DELAY = 5 # how often in seconds to send a WorkerRegisterMessage
+WRM_DELAY = 60 # how often in seconds to send a WorkerRegisterMessage
 bcolz.set_nthreads(1)
+INCOMING = os.path.join(bqueryd.DEFAULT_DATA_DIR, 'incoming')
+READY = os.path.join(bqueryd.DEFAULT_DATA_DIR, 'ready')
+for x in (INCOMING, READY):
+    if not os.path.exists(x):
+        os.mkdir(x)
 
 
 class WorkerNode(object):
 
-    def __init__(self, data_dir=DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG):
+    def __init__(self, data_dir=bqueryd.DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
             raise Exception("Datadir %s is not a valid difrectory" % data_dir)
         self.worker_id = binascii.hexlify(os.urandom(8))
@@ -40,7 +46,7 @@ class WorkerNode(object):
     def check_controllers(self):
         # Check the Redis set of controllers to see if any new ones have appeared,
         # Also register with them if so.
-        listed_controllers = list(self.redis_server.smembers('bqueryd_controllers_sink'))
+        listed_controllers = list(self.redis_server.smembers(bqueryd.REDIS_SET_KEY))
         current_controllers = []
         new_controllers = []
         for k,v in self.controllers.items():
@@ -93,16 +99,14 @@ class WorkerNode(object):
                 if has_new_files or (time.time() - data['last_seen'] > WRM_DELAY):
                     controller.send_json(wrm)
                     data['last_sent'] = time.time()
-                    self.logger.debug("register to %s" % data['address'])
+                    self.logger.debug("heartbeat to %s" % data['address'])
 
 
     def go(self):
 
         self.running = True
         while self.running:
-
             self.heartbeat()
-
             for sock, event in self.poller.poll(timeout=POLLING_TIMEOUT):
                 if event & zmq.POLLIN:
                     data = self.controllers[sock]
@@ -129,62 +133,109 @@ class WorkerNode(object):
             if not controller is sock:
                 controller.send_json(msg)
 
-    def handle(self, msg):
-        buf = '' # placeholder results buffer
-        args, kwargs = msg.get_args_kwargs()
+    def handle_calc(self, msg):
+        self.logger('doing calc %s' % args)
 
-        if msg.get('payload') == 'kill':
+        args, kwargs = msg.get_args_kwargs()
+        filename = args[0]
+        groupby_col_list = args[1]
+        aggregation_list = args[2]
+        where_terms_list = args[3]
+        expand_filter_column = kwargs.get('expand_filter_column')
+        aggregate = kwargs.get('aggregate', True)
+
+        # create rootdir
+        rootdir = os.path.join(self.data_dir, filename)
+        if not os.path.exists(rootdir):
+            raise Exception('Path %s does not exist' % rootdir)
+
+        ct = bquery.ctable(rootdir=rootdir, mode='r')
+        ct.auto_cache = False
+
+        # prepare filter
+        if not where_terms_list:
+            bool_arr = None
+        else:
+            bool_arr = ct.where_terms(where_terms_list)
+
+        # expand filter column check
+        if expand_filter_column:
+            bool_arr = ct.is_in_ordered_subgroups(basket_col=expand_filter_column, bool_arr=bool_arr)
+
+        # retrieve & aggregate if needed
+        if aggregate:
+            # aggregate by groupby parameters
+            result_ctable = ct.groupby(groupby_col_list, aggregation_list, bool_arr=bool_arr)
+            buf = result_ctable.todataframe()
+        else:
+            # direct result from the ctable
+            column_list = groupby_col_list + [x[0] for x in aggregation_list]
+            if bool_arr is not None:
+                ct = bcolz.fromiter(ct[column_list].where(bool_arr), ct[column_list].dtype, sum(bool_arr))
+            else:
+                ct = bcolz.fromiter(ct[column_list], ct[column_list].dtype, ct.len)
+            buf = ct[column_list].todataframe()
+
+        msg.add_as_binary('result', buf)
+        return msg
+
+    def file_downloader_callback(self, ticket):
+        def _fn(progress, size):
+            self.
+            logger.debug('At %s of %s for %s' % (progress, size, ticket))
+
+        return _fn
+
+    def handle_download(self, msg):
+        ticket = msg.get('ticket')
+        args, kwargs = msg.get_args_kwargs()
+        filename = kwargs.get('filename')
+        bucket = kwargs.get('bucket')
+        signature = kwargs.get('signature')
+
+        if not (filename and bucket and signature):
+            raise Exception('[filename, bucket, signature] args are all required')
+        if len(signature) < 1:
+            raise Exception('Path %s does not exist' % rootdir)
+
+        # get file from S3
+        s3_conn = boto.connect_s3()
+        s3_bucket = s3_conn.get_bucket(bucket, validate=False)
+        k = s3_bucket.get_key(filename, validate=False)
+        fd, tmp_filename = tempfile.mkstemp(dir=INCOMING)
+        k.get_contents_to_filename(tmp_filename, cb=file_downloader_callback(ticket))
+
+        # unzip the file to the signature
+        temp_path = os.path.join(INCOMING, signature)
+        # if the signature already exists, first remove it.
+        shutil.rmtree(temp_path, ignore_errors=True)
+        with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
+            myzip.extractall(temp_path)
+        # If a file is very large it takes a while to unzip, so wait until it is done and then just
+        # move the extracted path into the final destination in a quick operation
+        dest_path = os.path.join(READY, signature)
+        if not os.path.exists(dest_path):
+            os.rename(temp_path, dest_path)
+        else:
+            shutil.rmtree(temp_path, ignore_errors=True)
+            raise Exception('%s already exists' % dest_path)
+        if os.path.exists(tmp_filename):
+            os.remove(tmp_filename)
+
+    def handle(self, msg):
+        if msg.is('kill'):
             # Also send a message to all your controllers, that you are stopping
             for controller in self.controllers:
                 controller.send_json(StopMessage())
             self.running = False
             return
-        elif msg.get('payload') == 'info':
+        elif msg.is('info'):
             msg = self.prepare_wrm()
-        elif msg.get('payload') == 'sleep':
+        elif msg.is('sleep'):
             time.sleep(float(args[0]))
-            buf = 'zzzzz'
+            msg.add_as_binary('result', 'zzzzz')
+        elif msg.is('download'):
+            msg = self.handle_download(msg)
         else:
-            filename = args[0]
-            groupby_col_list = args[1]
-            aggregation_list = args[2]
-            where_terms_list = args[3]
-            expand_filter_column = kwargs.get('expand_filter_column')
-            aggregate = kwargs.get('aggregate', True)
-
-            # create rootdir
-            rootdir = os.path.join(self.data_dir, filename)
-            if not os.path.exists(rootdir):
-                msg['payload'] = 'Path %s does not exist' % rootdir
-                return ErrorMessage(msg)
-
-            ct = bquery.ctable(rootdir=rootdir, mode='r')
-            ct.auto_cache = False
-
-            # prepare filter
-            if not where_terms_list:
-                bool_arr = None
-            else:
-                bool_arr = ct.where_terms(where_terms_list)
-
-            # expand filter column check
-            if expand_filter_column:
-                bool_arr = ct.is_in_ordered_subgroups(basket_col=expand_filter_column, bool_arr=bool_arr)
-
-            # retrieve & aggregate if needed
-            if aggregate:
-                # aggregate by groupby parameters
-                result_ctable = ct.groupby(groupby_col_list, aggregation_list, bool_arr=bool_arr)
-                buf = result_ctable.todataframe()
-            else:
-                # direct result from the ctable
-                column_list = groupby_col_list + [x[0] for x in aggregation_list]
-                if bool_arr is not None:
-                    ct = bcolz.fromiter(ct[column_list].where(bool_arr), ct[column_list].dtype, sum(bool_arr))
-                else:
-                    ct = bcolz.fromiter(ct[column_list], ct[column_list].dtype, ct.len)
-                buf = ct[column_list].todataframe()
-
-        msg.add_as_binary('result', buf)
-
+            msg = self.handle_calc(msg)
         return msg
