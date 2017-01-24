@@ -3,14 +3,14 @@ import zmq
 import logging
 import binascii
 import traceback
-import json
 import random
 import os
 import socket
 import pandas as pd
 import redis
 import bqueryd
-from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, BusyMessage, DoneMessage, StopMessage
+from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, \
+    BusyMessage, DoneMessage, StopMessage, FileDownloadProgress
 from bqueryd.util import get_my_ip, bind_to_random_port
 
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
@@ -49,6 +49,7 @@ class ControllerNode(object):
         self.downloads = {}
         self.others = {} # A dict of other Controllers running on other DQE nodes
 
+
     def send(self, addr, msg_buf, is_rpc=False):
         try:
             if is_rpc:
@@ -71,6 +72,10 @@ class ControllerNode(object):
                 self.logger.debug('Connecting to %s' % x)
                 self.socket.connect(x)
                 self.others[x] = {'connect_time': time.time()}
+            else:
+                msg = Message({'payload':'info'})
+                msg.add_as_binary('result', self.get_info())
+                self.socket.send_multipart([x, msg.to_json()])
         # Disconnect from controllers not in current set
         for x in self.others.keys()[:]: # iterate over a copy of keys so we can remove entries
             if x not in all_servers:
@@ -183,9 +188,15 @@ class ControllerNode(object):
                 self.handle_worker(sender, msg)
 
     def handle_peer(self, sender, msg):
-        self.logger.debug('****** %s' % msg)
         if msg.isa('download'):
             self.handle_download(msg)
+        elif msg.isa('info'):
+            # Another node registered with you and is sending some info
+            data = msg.get_from_binary('result')
+            addr = data.get('address')
+            node = data.get('node')
+            if addr and node:
+                self.others[addr]['node'] = node
         else:
             self.logger.debug("Got a msg but don't know what to do with it %s" % msg)
 
@@ -222,6 +233,13 @@ class ControllerNode(object):
             self.remove_worker(worker_id)
             return
 
+        if msg.isa(FileDownloadProgress):
+            ticket = msg['ticket']
+            dest = msg['dest']
+            for x in ('progress', 'size'):
+                self.downloads[ticket][dest][x] = msg.get(x)
+            return
+
         # Every msg needs a token, otherwise we don't know who the reply goes to
         if 'token' not in msg:
             self.logger.debug('Message received without a token in it?')
@@ -247,10 +265,15 @@ class ControllerNode(object):
         elif msg.isa('killworkers'):
             result = self.killworkers()
         elif msg.isa('download'):
+            ticket = binascii.hexlify(os.urandom(8)) # track all downloads using a ticket
+            self.downloads[ticket] = {}
+            msg['source'] = self.address
+            msg['ticket'] = ticket
             for o in self.others:
                 mm = msg.copy()
-                del mm['token']
                 self.send(o, mm.to_json())
+                self.downloads[ticket][o] = {'msg':mm}
+            self.downloads[ticket][self.address] = {'msg': msg}
             result = self.handle_download(msg)
         elif msg['payload'] in ('sleep',):
             self.worker_out_messages.append(msg.copy())
@@ -269,6 +292,7 @@ class ControllerNode(object):
         if not a_local:
             raise Exception('No local worker found for download message!')
         msg['worker_id'] = a_local
+        msg['dest'] = self.address
         self.worker_out_messages.append(msg)
 
     def handle_calc_message(self, msg):
@@ -323,7 +347,7 @@ class ControllerNode(object):
         data = {'msg_count_in': self.msg_count_in, 'node': self.node_name,
                 'workers': self.worker_map,
                 'last_heartbeat': self.last_heartbeat, 'address': self.address,
-                'others': self.others
+                'others': self.others, 'downloads': self.downloads,
                 }
         return data
 
