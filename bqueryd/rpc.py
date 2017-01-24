@@ -32,7 +32,7 @@ class RPC(object):
         for c in controllers:
             self.logger.debug('Trying RPC to %s' % c)
             tmp_sock = self.context.socket(zmq.REQ)
-            tmp_sock.setsockopt(zmq.RCVTIMEO, 750)
+            tmp_sock.setsockopt(zmq.RCVTIMEO, 2000)
             tmp_sock.setsockopt(zmq.LINGER, 0)
             tmp_sock.connect(c)
             # first ping the controller to see if it respnds at all

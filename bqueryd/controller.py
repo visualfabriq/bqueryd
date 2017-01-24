@@ -365,6 +365,9 @@ class ControllerNode(object):
             if (now - worker.get('last_seen', now)) > DEAD_WORKER_TIMEOUT:
                 self.remove_worker(worker_id)
 
+    def check_downloads(self):
+        pass
+
     def go(self):
         self.logger.debug('Started')
 
@@ -373,6 +376,7 @@ class ControllerNode(object):
                 time.sleep(0.0001)
                 self.heartbeat()
                 self.free_dead_workers()
+                self.check_downloads()
                 for sock, event in self.poller.poll(timeout=POLLING_TIMEOUT):
                     if event & zmq.POLLIN:
                         self.handle_in()

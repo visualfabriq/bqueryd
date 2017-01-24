@@ -216,7 +216,9 @@ class WorkerNode(object):
         s3_bucket = s3_conn.get_bucket(bucket, validate=False)
         k = s3_bucket.get_key(filename, validate=False)
         fd, tmp_filename = tempfile.mkstemp(dir=INCOMING)
-        k.get_contents_to_filename(tmp_filename, cb=self.file_downloader_callback(msg))
+
+        the_callback = self.file_downloader_callback(msg)
+        k.get_contents_to_filename(tmp_filename, cb=the_callback)
 
         # unzip the file to the signature
         temp_path = os.path.join(INCOMING, signature)
@@ -235,6 +237,8 @@ class WorkerNode(object):
         if os.path.exists(tmp_filename):
             os.remove(tmp_filename)
         msg.add_as_binary('result', dest_path)
+        the_callback(-1, -1)
+
         return msg
 
     def handle(self, msg):
