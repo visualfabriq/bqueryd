@@ -14,7 +14,8 @@ import logging
 import random
 import bqueryd
 import socket
-from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, DoneMessage
+from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
+    DoneMessage, FileDownloadProgress
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
@@ -187,14 +188,19 @@ class WorkerNode(object):
         msg.add_as_binary('result', buf)
         return msg
 
-    def file_downloader_callback(self, ticket):
+    def file_downloader_callback(self, msg):
         def _fn(progress, size):
-            self.logger.debug('At %s of %s for %s' % (progress, size, ticket))
-
+            ticket = msg.get('ticket')
+            addr = str(msg.get('source'))
+            self.logger.debug('At %s of %s for %s :: %s' % (progress, size, ticket, addr))
+            self.logger.debug(msg)
+            tmp = FileDownloadProgress(msg)
+            tmp['progress'] = progress
+            tmp['size'] = size
+            self.socket.send_multipart([addr, tmp.to_json()])
         return _fn
 
     def handle_download(self, msg):
-        ticket = msg.get('ticket')
         args, kwargs = msg.get_args_kwargs()
         filename = kwargs.get('filename')
         bucket = kwargs.get('bucket')
@@ -210,7 +216,7 @@ class WorkerNode(object):
         s3_bucket = s3_conn.get_bucket(bucket, validate=False)
         k = s3_bucket.get_key(filename, validate=False)
         fd, tmp_filename = tempfile.mkstemp(dir=INCOMING)
-        k.get_contents_to_filename(tmp_filename, cb=self.file_downloader_callback(ticket))
+        k.get_contents_to_filename(tmp_filename, cb=self.file_downloader_callback(msg))
 
         # unzip the file to the signature
         temp_path = os.path.join(INCOMING, signature)
