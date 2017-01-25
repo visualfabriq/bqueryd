@@ -99,17 +99,26 @@ class ControllerNode(object):
             self.connect_to_others()
             self.last_heartbeat = time.time()
 
-    def find_local_worker(self):
-        tmp = [worker_id for worker_id, worker in self.worker_map.items() if worker.get('node') == self.node_name]
-        if tmp:
-            return tmp[0]
-        raise Exception('No local worker found!')
-
-    def find_free_worker(self):
-        # Pick a random worker_id to send a message to for now, TODO add some kind of load-balancing & affinity
-        free_workers = [worker_id for worker_id, worker in self.worker_map.items() if not worker.get('busy', False)]
+    def find_free_worker(self, needs_local=False):
+        # Pick a random worker_id to send a message, TODO add some kind of load-balancing
+        free_workers = []
+        free_local_workers = []
+        for worker_id, worker in self.worker_map.items():
+            if worker.get('busy'):
+                continue
+            free_workers.append(worker_id)
+            if needs_local and worker.get('node') != self.node_name:
+                continue
+            free_local_workers.append(worker_id)
+        # if there are no free workers at all, just bail
         if not free_workers:
             return None
+        # and if needs local and there are none, same thing
+        if needs_local and not free_local_workers:
+            return None
+        # give priority to local workers if there are free ones
+        if free_local_workers:
+            return random.choice(free_local_workers)
         return random.choice(free_workers)
 
     def process_sink_results(self):
@@ -165,17 +174,20 @@ class ControllerNode(object):
         while self.worker_out_messages:
 
             msg = self.worker_out_messages.pop()
-            if 'worker_id' in msg:
-                worker_id = msg['worker_id']
-            else:
-                # Assumption now is that all workers can serve requests to all files,
-                # TODO We need to change the find_free_worker to take the requested filename into account
-                # find a worker that is free
+            worker_id = msg.get('worker_id')
+
+            # Assumption now is that all workers can serve requests to all files,
+            # TODO We need to change the find_free_worker to take the requested filename into account
+            # find a worker that is free
+            if worker_id == '__needs_local__':
+                worker_id = self.find_free_worker(needs_local=True)
+            elif worker_id is None:
                 worker_id = self.find_free_worker()
-                if not worker_id:
-                    self.logger.debug('No free workers at this time')
-                    self.worker_out_messages.append(msg)
-                    break
+
+            if not worker_id:
+                self.logger.debug('No free workers at this time')
+                self.worker_out_messages.append(msg)
+                break
 
             # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
             self.worker_map[worker_id]['last_sent'] = time.time()
@@ -209,9 +221,7 @@ class ControllerNode(object):
                 self.others[addr]['node'] = node
                 self.others[addr]['uptime'] = uptime
         elif msg.isa('movebcolz'):
-            a_local = self.find_local_worker()
-            msg['worker_id'] = a_local
-            self.logger.debug('Asking %s to move bcolz file' % a_local)
+            msg['worker_id'] = '__needs_local__'
             self.worker_out_messages.append(msg)
         else:
             self.logger.debug("Got a msg but don't know what to do with it %s" % msg)
@@ -229,7 +239,7 @@ class ControllerNode(object):
         self.worker_map.setdefault(worker_id, {})['last_seen'] = time.time()
 
         if msg.isa(WorkerRegisterMessage):
-            self.logger.debug('Worker registered %s' % worker_id)
+            # self.logger.debug('Worker registered %s' % worker_id)
             for filename in msg.get('data_files', []):
                 self.files_map.setdefault(filename, set()).add(worker_id)
             self.worker_map[worker_id]['node'] = msg['node']
@@ -293,6 +303,7 @@ class ControllerNode(object):
             else:
                 ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
                 self.downloads[ticket] = {'rpc_id':sender, 'progress':{}, 'filename':filename, 'signature':signature}
+                del msg['token'] # delete the incoming token so we don't send replies back to caller directly
                 msg['source'] = self.address
                 msg['ticket'] = ticket
                 for o in self.others:
@@ -314,8 +325,7 @@ class ControllerNode(object):
     def handle_download(self, msg):
         # the caller either wants to wait for the entire download to be done,
         # or get a ticket and get to query with status updates
-        a_local = self.find_local_worker()
-        msg['worker_id'] = a_local
+        msg['worker_id'] = '__needs_local__'
         msg['dest'] = self.address
         self.worker_out_messages.append(msg)
 
@@ -399,21 +409,32 @@ class ControllerNode(object):
                 self.remove_worker(worker_id)
 
     def check_downloads(self):
+        completed_tickets = []
         for ticket, download in self.downloads.items():
-            all_done = True
             signature = download['signature']
             filename = download['filename']
+            in_progress_count = 0
             for controller_address, progress in download.get('progress', {}).items():
                 if progress.get('progress', 0) > -1:
-                    all_done = False
-            if all_done:
+                    in_progress_count += 1
+            if in_progress_count < 1:
                 # Send msg to all to move the signature from READY to production and rename
                 m = Message({'payload':'movebcolz'})
                 m.add_as_binary('data', {'filename':filename, 'signature':signature})
                 for controller_address in download.get('progress', {}):
                     self.send(controller_address, m.to_json())
-                    download['progress'][controller_address]['progress'] = 0
-                    download['progress'][controller_address]['move_sent'] = True
+                completed_tickets.append(ticket)
+
+            if not download.get('reply') and in_progress_count == len(self.others) + 1:
+                self.logger.debug('OK, ALL nodes in progress downloading file')
+                # Return the ticket number to the calling RPC...
+                rpc_id = download.get('rpc_id')
+                rpc_result = Message({'token':binascii.hexlify(rpc_id)})
+                rpc_result.add_as_binary('result', ticket)
+                self.rpc_results.append(rpc_result)
+                download['reply'] = True # get rid of the rpc id , we have already replied
+        for ticket in completed_tickets:
+            del self.downloads[ticket]
 
     def go(self):
         self.logger.debug('Started')
