@@ -20,13 +20,8 @@ from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, B
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
-WRM_DELAY = 5 # how often in seconds to send a WorkerRegisterMessage
+WRM_DELAY = 20 # how often in seconds to send a WorkerRegisterMessage
 bcolz.set_nthreads(1)
-INCOMING = os.path.join(bqueryd.DEFAULT_DATA_DIR, 'incoming')
-READY = os.path.join(bqueryd.DEFAULT_DATA_DIR, 'ready')
-for x in (INCOMING, READY):
-    if not os.path.exists(x):
-        os.mkdir(x)
 
 
 class WorkerNode(object):
@@ -48,6 +43,7 @@ class WorkerNode(object):
         self.poller.register(self.socket, zmq.POLLIN)
         self.check_controllers()
         self.last_wrm = 0
+        self.start_time = time.time()
         self.logger = bqueryd.logger.getChild('worker '+self.worker_id)
         self.logger.setLevel(loglevel)
 
@@ -88,6 +84,7 @@ class WorkerNode(object):
         wrm['data_files'] = list(self.data_files)
         wrm['data_dir'] = self.data_dir
         wrm['controllers'] = self.controllers.values()
+        wrm['uptime'] = int(time.time() - self.start_time)
         return wrm
 
     def heartbeat(self):
@@ -123,7 +120,7 @@ class WorkerNode(object):
                         continue
                     data['last_seen'] = time.time()
 
-                    self.logger.debug('Received from %s' % sender)
+                    # self.logger.debug('Received from %s' % sender)
                     # TODO Notify Controllers that we are busy, no more messages to be sent
                     self.send_to_all(BusyMessage())
                     # The above busy notification is not perfect as other messages might be on their way already
@@ -193,7 +190,6 @@ class WorkerNode(object):
             ticket = msg.get('ticket')
             addr = str(msg.get('source'))
             self.logger.debug('At %s of %s for %s :: %s' % (progress, size, ticket, addr))
-            self.logger.debug(msg)
             tmp = FileDownloadProgress(msg)
             tmp['progress'] = progress
             tmp['size'] = size
@@ -215,22 +211,23 @@ class WorkerNode(object):
         s3_conn = boto.connect_s3()
         s3_bucket = s3_conn.get_bucket(bucket, validate=False)
         k = s3_bucket.get_key(filename, validate=False)
-        fd, tmp_filename = tempfile.mkstemp(dir=INCOMING)
+        fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
 
         the_callback = self.file_downloader_callback(msg)
         k.get_contents_to_filename(tmp_filename, cb=the_callback)
 
         # unzip the file to the signature
-        temp_path = os.path.join(INCOMING, signature)
+        temp_path = os.path.join(bqueryd.INCOMING, signature)
         # if the signature already exists, first remove it.
         shutil.rmtree(temp_path, ignore_errors=True)
         with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
             myzip.extractall(temp_path)
         # If a file is very large it takes a while to unzip, so wait until it is done and then just
         # move the extracted path into the final destination in a quick operation
-        dest_path = os.path.join(READY, signature)
+        dest_path = os.path.join(bqueryd.READY, signature)
         if not os.path.exists(dest_path):
             os.rename(temp_path, dest_path)
+            self.logger.debug("Downloaded %s" % dest_path)
         else:
             shutil.rmtree(temp_path, ignore_errors=True)
             raise Exception('%s already exists' % dest_path)
@@ -240,6 +237,24 @@ class WorkerNode(object):
         the_callback(-1, -1)
 
         return msg
+
+    def handle_movebcolz(self, msg):
+        self.logger.debug('movebcolz %s' % msg)
+        data = msg.get_from_binary('data')
+        filename = data.get('filename')
+        signature = data.get('signature')
+        if not(filename and signature):
+            self.logger.debug('Movebcolz msg expects a filename and signature in [data] key')
+            return
+        prod_path = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
+        ready_path = os.path.join(bqueryd.READY, signature)
+        self.logger.debug('Moving %s to %s' % (ready_path, prod_path))
+        if not os.path.exists(ready_path):
+            self.logger.debug('%s does not exist' % ready_path)
+            return
+        if os.path.exists(prod_path):
+            shutil.rmtree(prod_path, ignore_errors=True)
+        os.rename(ready_path, prod_path)
 
     def handle(self, msg):
         if msg.isa('kill'):
@@ -259,6 +274,8 @@ class WorkerNode(object):
             msg.add_as_binary('result', snore)
         elif msg.isa('download'):
             msg = self.handle_download(msg)
+        elif msg.isa('movebcolz'):
+            msg = self.handle_movebcolz(msg)
         else:
             msg = self.handle_calc(msg)
         return msg

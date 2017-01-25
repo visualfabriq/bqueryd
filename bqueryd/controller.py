@@ -5,6 +5,7 @@ import binascii
 import traceback
 import random
 import os
+import shutil
 import socket
 import pandas as pd
 import redis
@@ -48,10 +49,13 @@ class ControllerNode(object):
         # Keep a list of files presently being downloaded
         self.downloads = {}
         self.others = {} # A dict of other Controllers running on other DQE nodes
-
+        self.start_time = time.time()
 
     def send(self, addr, msg_buf, is_rpc=False):
         try:
+            if addr == self.address:
+                self.handle_peer(addr, msg_factory(msg_buf))
+                return
             if is_rpc:
                 tmp = [addr, '', msg_buf]
             else:
@@ -75,7 +79,11 @@ class ControllerNode(object):
             else:
                 msg = Message({'payload':'info'})
                 msg.add_as_binary('result', self.get_info())
-                self.socket.send_multipart([x, msg.to_json()])
+                try:
+                    self.socket.send_multipart([x, msg.to_json()])
+                except zmq.error.ZMQError, e:
+                    self.logger.debug('Removing %s due to %s' % (x, e))
+                    self.redis_server.srem(bqueryd.REDIS_SET_KEY, x)
         # Disconnect from controllers not in current set
         for x in self.others.keys()[:]: # iterate over a copy of keys so we can remove entries
             if x not in all_servers:
@@ -95,6 +103,7 @@ class ControllerNode(object):
         tmp = [worker_id for worker_id, worker in self.worker_map.items() if worker.get('node') == self.node_name]
         if tmp:
             return tmp[0]
+        raise Exception('No local worker found!')
 
     def find_free_worker(self):
         # Pick a random worker_id to send a message to for now, TODO add some kind of load-balancing & affinity
@@ -195,8 +204,15 @@ class ControllerNode(object):
             data = msg.get_from_binary('result')
             addr = data.get('address')
             node = data.get('node')
+            uptime = data.get('uptime')
             if addr and node:
                 self.others[addr]['node'] = node
+                self.others[addr]['uptime'] = uptime
+        elif msg.isa('movebcolz'):
+            a_local = self.find_local_worker()
+            msg['worker_id'] = a_local
+            self.logger.debug('Asking %s to move bcolz file' % a_local)
+            self.worker_out_messages.append(msg)
         else:
             self.logger.debug("Got a msg but don't know what to do with it %s" % msg)
 
@@ -217,6 +233,7 @@ class ControllerNode(object):
             for filename in msg.get('data_files', []):
                 self.files_map.setdefault(filename, set()).add(worker_id)
             self.worker_map[worker_id]['node'] = msg['node']
+            self.worker_map[worker_id]['uptime'] = msg['uptime']
             return
 
         if msg.isa(BusyMessage):
@@ -237,7 +254,7 @@ class ControllerNode(object):
             ticket = msg['ticket']
             dest = msg['dest']
             for x in ('progress', 'size'):
-                self.downloads[ticket][dest][x] = msg.get(x)
+                self.downloads[ticket]['progress'][dest][x] = msg.get(x)
             return
 
         # Every msg needs a token, otherwise we don't know who the reply goes to
@@ -264,17 +281,26 @@ class ControllerNode(object):
             result = self.kill()
         elif msg.isa('killworkers'):
             result = self.killworkers()
+        elif msg.isa('killall'):
+            result = self.killall()
         elif msg.isa('download'):
-            ticket = binascii.hexlify(os.urandom(8)) # track all downloads using a ticket
-            self.downloads[ticket] = {}
-            msg['source'] = self.address
-            msg['ticket'] = ticket
-            for o in self.others:
-                mm = msg.copy()
-                self.send(o, mm.to_json())
-                self.downloads[ticket][o] = {'msg':mm}
-            self.downloads[ticket][self.address] = {'msg': msg}
-            result = self.handle_download(msg)
+            args, kwargs = msg.get_args_kwargs()
+            filename = kwargs.get('filename')
+            bucket = kwargs.get('bucket')
+            signature = kwargs.get('signature')
+            if not (filename and bucket and signature):
+                result = "A download needs kwargs: (filename=, bucket=, signature=)"
+            else:
+                ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
+                self.downloads[ticket] = {'rpc_id':sender, 'progress':{}, 'filename':filename, 'signature':signature}
+                msg['source'] = self.address
+                msg['ticket'] = ticket
+                for o in self.others:
+                    mm = msg.copy()
+                    self.send(o, mm.to_json())
+                    self.downloads[ticket]['progress'][o] = {}
+                self.downloads[ticket]['progress'][self.address] = {}
+                result = self.handle_download(msg)
         elif msg['payload'] in ('sleep',):
             self.worker_out_messages.append(msg.copy())
             result = None
@@ -289,8 +315,6 @@ class ControllerNode(object):
         # the caller either wants to wait for the entire download to be done,
         # or get a ticket and get to query with status updates
         a_local = self.find_local_worker()
-        if not a_local:
-            raise Exception('No local worker found for download message!')
         msg['worker_id'] = a_local
         msg['dest'] = self.address
         self.worker_out_messages.append(msg)
@@ -331,6 +355,14 @@ class ControllerNode(object):
 
         self.rpc_segments[parent_token] = rpc_segment
 
+    def killall(self):
+        self.killworkers()
+        m = Message({'payload':'kill'})
+        for x in self.others:
+            self.send(x, m.to_json(), is_rpc=True)
+        self.kill()
+        return 'dood'
+
     def kill(self):
         #unregister with the Redis set
         self.redis_server.srem(bqueryd.REDIS_SET_KEY, self.address)
@@ -348,6 +380,7 @@ class ControllerNode(object):
                 'workers': self.worker_map,
                 'last_heartbeat': self.last_heartbeat, 'address': self.address,
                 'others': self.others, 'downloads': self.downloads,
+                'uptime': int(time.time() - self.start_time), 'start_time': self.start_time
                 }
         return data
 
@@ -366,7 +399,21 @@ class ControllerNode(object):
                 self.remove_worker(worker_id)
 
     def check_downloads(self):
-        pass
+        for ticket, download in self.downloads.items():
+            all_done = True
+            signature = download['signature']
+            filename = download['filename']
+            for controller_address, progress in download.get('progress', {}).items():
+                if progress.get('progress', 0) > -1:
+                    all_done = False
+            if all_done:
+                # Send msg to all to move the signature from READY to production and rename
+                m = Message({'payload':'movebcolz'})
+                m.add_as_binary('data', {'filename':filename, 'signature':signature})
+                for controller_address in download.get('progress', {}):
+                    self.send(controller_address, m.to_json())
+                    download['progress'][controller_address]['progress'] = 0
+                    download['progress'][controller_address]['move_sent'] = True
 
     def go(self):
         self.logger.debug('Started')
@@ -376,13 +423,12 @@ class ControllerNode(object):
                 time.sleep(0.0001)
                 self.heartbeat()
                 self.free_dead_workers()
-                self.check_downloads()
                 for sock, event in self.poller.poll(timeout=POLLING_TIMEOUT):
                     if event & zmq.POLLIN:
                         self.handle_in()
                     if event & zmq.POLLOUT:
                         self.handle_out()
-
+                self.check_downloads()
             except KeyboardInterrupt:
                 self.logger.debug('Keyboard Interrupt')
                 self.kill()
