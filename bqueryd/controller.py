@@ -263,18 +263,15 @@ class ControllerNode(object):
         if msg.isa(FileDownloadProgress):
             ticket = msg['ticket']
             dest = msg['dest']
+            filename = msg['ticket']
             for x in ('progress', 'size'):
-                self.downloads[ticket]['progress'][dest][x] = msg.get(x)
+                self.downloads[ticket]['progress'][dest].setdefault(filename, {'started':time.time()})[x] = msg.get(x)
             return
 
-        # Every msg needs a token, otherwise we don't know who the reply goes to
-        if 'token' not in msg:
-            self.logger.debug('Message received without a token in it?')
-            return
-
-        # A message might have been passed on to a worker for processing and needs to be returned to the relevant caller
-        # so it goes in the rpc_results list
-        self.rpc_results.append(msg)
+        if 'token' in msg:
+            # A message might have been passed on to a worker for processing and needs to be returned to the relevant caller
+            # so it goes in the rpc_results list
+            self.rpc_results.append(msg)
 
     def handle_rpc(self, sender, msg):
         # RPC calls have a binary identiy set, hexlify it to make it readable and serializable
@@ -295,14 +292,13 @@ class ControllerNode(object):
             result = self.killall()
         elif msg.isa('download'):
             args, kwargs = msg.get_args_kwargs()
-            filename = kwargs.get('filename')
+            filenames = kwargs.get('filenames')
             bucket = kwargs.get('bucket')
-            signature = kwargs.get('signature')
-            if not (filename and bucket and signature):
-                result = "A download needs kwargs: (filename=, bucket=, signature=)"
+            if not (filenames and bucket):
+                result = "A download needs kwargs: (filenames=, bucket=)"
             else:
                 ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
-                self.downloads[ticket] = {'rpc_id':sender, 'progress':{}, 'filename':filename, 'signature':signature}
+                self.downloads[ticket] = {'rpc_id':sender, 'created':time.time(), 'progress':{}}
                 del msg['token'] # delete the incoming token so we don't send replies back to caller directly
                 msg['source'] = self.address
                 msg['ticket'] = ticket
@@ -323,11 +319,19 @@ class ControllerNode(object):
             self.rpc_results.append(msg)
 
     def handle_download(self, msg):
-        # the caller either wants to wait for the entire download to be done,
-        # or get a ticket and get to query with status updates
+        # the controller receives a message with filenames
+        # for each filename requested, send a message to workers requesting the single file
+        # the entire doenload gets tracked under a single ticket
         msg['worker_id'] = '__needs_local__'
         msg['dest'] = self.address
-        self.worker_out_messages.append(msg)
+
+        args, kwargs = msg.get_args_kwargs()
+        filenames = kwargs.get('filenames')
+        for filename in filenames:
+            newmsg = msg.copy()
+            kwargs['filename'] = filename
+            newmsg.set_args_kwargs(args, kwargs)
+            self.worker_out_messages.append(newmsg)
 
     def handle_calc_message(self, msg):
         args, kwargs = msg.get_args_kwargs()
@@ -411,20 +415,24 @@ class ControllerNode(object):
     def check_downloads(self):
         completed_tickets = []
         for ticket, download in self.downloads.items():
-            signature = download['signature']
-            filename = download['filename']
             in_progress_count = 0
             for controller_address, progress in download.get('progress', {}).items():
-                if progress.get('progress', 0) > -1:
+                # progress is a dict keyed on filename
+                for filename, fileprogress in progress.items():
+                    if fileprogress.get('progress', 0) > -1:
+                        in_progress_count += 1
+                # if progress is an empty dict, no workers have started yet so increment in_progress_count
+                if not progress:
                     in_progress_count += 1
+
             if in_progress_count < 1:
                 # Send msg to all to move the signature from READY to production and rename
-                m = Message({'payload':'movebcolz'})
-                m.add_as_binary('data', {'filename':filename, 'signature':signature})
+                m = Message({'payload':'movebcolz', 'ticket':ticket})
                 for controller_address in download.get('progress', {}):
                     self.send(controller_address, m.to_json())
                 completed_tickets.append(ticket)
 
+            # TODO only using the count of others here, do something more reliable
             if not download.get('reply') and in_progress_count == len(self.others) + 1:
                 self.logger.debug('OK, ALL nodes in progress downloading file')
                 # Return the ticket number to the calling RPC...
@@ -433,6 +441,7 @@ class ControllerNode(object):
                 rpc_result.add_as_binary('result', ticket)
                 self.rpc_results.append(rpc_result)
                 download['reply'] = True # get rid of the rpc id , we have already replied
+                del download['rpc_id']
         for ticket in completed_tickets:
             del self.downloads[ticket]
 

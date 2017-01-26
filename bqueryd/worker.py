@@ -98,7 +98,7 @@ class WorkerNode(object):
                 if has_new_files or (time.time() - data['last_seen'] > WRM_DELAY):
                     self.socket.send_multipart([controller, wrm.to_json()])
                     data['last_sent'] = time.time()
-                    self.logger.debug("heartbeat to %s" % data['address'])
+                    # self.logger.debug("heartbeat to %s" % data['address'])
 
     def go(self):
 
@@ -131,6 +131,7 @@ class WorkerNode(object):
                     except Exception, e:
                         tmp = ErrorMessage(msg)
                         tmp['payload'] = traceback.format_exc()
+                        self.logger.debug(tmp['payload'])
                     self.send_to_all(DoneMessage()) # Send an empty mesage to all controllers, this flags you as 'Done'
                     if tmp:
                         self.socket.send_multipart([sender, tmp.to_json()])
@@ -187,10 +188,13 @@ class WorkerNode(object):
 
     def file_downloader_callback(self, msg):
         def _fn(progress, size):
+            args, kwargs = msg.get_args_kwargs()
+            filename = kwargs.get('filename')
             ticket = msg.get('ticket')
             addr = str(msg.get('source'))
-            self.logger.debug('At %s of %s for %s :: %s' % (progress, size, ticket, addr))
+            self.logger.debug('At %s of %s for %s %s :: %s' % (progress, size, ticket, addr, filename))
             tmp = FileDownloadProgress(msg)
+            tmp['filename'] = filename
             tmp['progress'] = progress
             tmp['size'] = size
             self.socket.send_multipart([addr, tmp.to_json()])
@@ -200,12 +204,9 @@ class WorkerNode(object):
         args, kwargs = msg.get_args_kwargs()
         filename = kwargs.get('filename')
         bucket = kwargs.get('bucket')
-        signature = kwargs.get('signature')
 
-        if not (filename and bucket and signature):
-            raise Exception('[filename, bucket, signature] args are all required')
-        if len(signature) < 1:
-            raise Exception('Path %s does not exist' % rootdir)
+        if not (filename and bucket):
+            raise Exception('[filename, bucket] args are all required')
 
         # get file from S3
         s3_conn = boto.connect_s3()
@@ -216,45 +217,46 @@ class WorkerNode(object):
         the_callback = self.file_downloader_callback(msg)
         k.get_contents_to_filename(tmp_filename, cb=the_callback)
 
-        # unzip the file to the signature
-        temp_path = os.path.join(bqueryd.INCOMING, signature)
+        # unzip the tmp file to the filename
+        ticket = msg['ticket']
+        ticket_path = os.path.join(bqueryd.INCOMING, ticket)
+        if not os.path.exists(ticket_path):
+            os.mkdir(ticket_path)
+
+        temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
         # if the signature already exists, first remove it.
-        shutil.rmtree(temp_path, ignore_errors=True)
+        if os.path.exists(temp_path):
+            shutil.rmtree(temp_path, ignore_errors=True)
         with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
             myzip.extractall(temp_path)
-        # If a file is very large it takes a while to unzip, so wait until it is done and then just
-        # move the extracted path into the final destination in a quick operation
-        dest_path = os.path.join(bqueryd.READY, signature)
-        if not os.path.exists(dest_path):
-            os.rename(temp_path, dest_path)
-            self.logger.debug("Downloaded %s" % dest_path)
-        else:
-            shutil.rmtree(temp_path, ignore_errors=True)
-            raise Exception('%s already exists' % dest_path)
+        self.logger.debug("Downloaded %s" % temp_path)
         if os.path.exists(tmp_filename):
             os.remove(tmp_filename)
-        msg.add_as_binary('result', dest_path)
+        msg.add_as_binary('result', temp_path)
         the_callback(-1, -1)
 
         return msg
 
     def handle_movebcolz(self, msg):
+        # A notification from the controller that all files are downloaded on all nodes, the files in this ticket can be moved into place
         self.logger.debug('movebcolz %s' % msg)
-        data = msg.get_from_binary('data')
-        filename = data.get('filename')
-        signature = data.get('signature')
-        if not(filename and signature):
-            self.logger.debug('Movebcolz msg expects a filename and signature in [data] key')
+        ticket = msg['ticket']
+        ticket_path = os.path.join(bqueryd.INCOMING, ticket)
+        if not os.path.exists(ticket_path):
+            self.logger.debug('%s does not exist' % ticket_path)
             return
-        prod_path = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
-        ready_path = os.path.join(bqueryd.READY, signature)
-        self.logger.debug('Moving %s to %s' % (ready_path, prod_path))
-        if not os.path.exists(ready_path):
-            self.logger.debug('%s does not exist' % ready_path)
-            return
-        if os.path.exists(prod_path):
-            shutil.rmtree(prod_path, ignore_errors=True)
-        os.rename(ready_path, prod_path)
+
+        for filename in os.listdir(ticket_path):
+            prod_path = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
+            if os.path.exists(prod_path):
+                shutil.rmtree(prod_path, ignore_errors=True)
+            ready_path = os.path.join(ticket_path, filename)
+            os.rename(ready_path, prod_path)
+
+        shutil.rmtree(ticket_path, ignore_errors=True)
+        # TODO add some error handling when something goes wrong in this movemessage, send the exception to the
+        # calling controller and hang it on the download ticket
+
 
     def handle(self, msg):
         if msg.isa('kill'):
