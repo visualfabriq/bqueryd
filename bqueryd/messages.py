@@ -49,20 +49,21 @@ class Message(dict):
     def add_as_binary(self, key, value):
         self[key] = cPickle.dumps(value).encode('base64')
 
-    def get_from_binary(self, key):
+    def get_from_binary(self, key, default=None):
         buf = self.get(key)
-        if not buf: return
+        if not buf: return default
         return cPickle.loads(buf.decode('base64'))
 
     def to_json(self):
         # We could do some serializiation fixes in here for things like datetime or other binary non-json-serializabe members
         return json.dumps(self)
 
+    def set_args_kwargs(self, args, kwargs):
+        params = {'args': args, 'kwargs': kwargs}
+        self.add_as_binary('params', params)
+
     def get_args_kwargs(self):
-        params = self.get('params', {})
-        if params:
-            tmp = params.decode('base64')
-            params = cPickle.loads(tmp)
+        params = self.get_from_binary('params', {})
         kwargs = params.get('kwargs', {})
         args = params.get('args', [])
         return args, kwargs
