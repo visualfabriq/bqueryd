@@ -1,9 +1,12 @@
 import logging
 import zmq
 import time
+import os
 import redis
 import random
 import bqueryd
+import boto
+import smart_open
 from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
 import traceback
 
@@ -78,3 +81,28 @@ class RPC(object):
             return result
 
         return _rpc
+
+    def distribute(self, filename, bucket):
+        'Upload a local filename to the specified S3 bucket, and then issue a download command using the hash of the file'
+        if filename[0] != '/':
+            filepath = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
+        else:
+            filepath = filename
+        if not os.path.exists(filepath):
+            raise RPCError('Filename %s not found' % filepath)
+
+        # Try to compress the whole bcolz direcory into a single zipfile
+        tmpzip_filename, signature = bqueryd.util.zip_to_file(filepath, bqueryd.INCOMING)
+
+        s3_conn = boto.connect_s3()
+        s3_bucket = s3_conn.get_bucket(bucket, validate=False)
+        key = s3_bucket.get_key(filename, validate=False)
+
+        # Use smart_open to stream the file into S3 as the files can get very large
+        with smart_open.smart_open(key, mode='wb') as fout:
+            fout.write(open(tmpzip_filename).read())
+
+        os.remove(tmpzip_filename)
+        self.download(filename=filename, bucket=bucket, signature=signature)
+
+        return signature

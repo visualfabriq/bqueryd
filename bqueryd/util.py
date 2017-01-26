@@ -1,6 +1,10 @@
 import netifaces
 import zmq
 import random
+import os
+import tempfile
+import zipfile
+import binascii
 
 def get_my_ip():
     eth_interfaces = sorted([ifname for ifname in netifaces.interfaces() if ifname.startswith('eth')])
@@ -29,3 +33,20 @@ def bind_to_random_port(socket, addr, min_port=49152, max_port=65536, max_tries=
         else:
             return socket.identity
     raise zmq.ZMQBindError("Could not bind socket to random port.")
+
+def zip_to_file(file_path, destination):
+    fd, zip_filename = tempfile.mkstemp(suffix=".zip", dir=destination)
+    with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as myzip:
+        if os.path.isdir(file_path):
+            abs_src = os.path.abspath(file_path)
+            for root, dirs, files in os.walk(file_path):
+                for current_file in files:
+                    absname = os.path.abspath(os.path.join(root, current_file))
+                    arcname = absname[len(abs_src) + 1:]
+                    myzip.write(absname, arcname)
+        else:
+            myzip.write(file_path, file_path)
+        zip_info = ''.join(str(zipinfoi.CRC) for zipinfoi in  myzip.infolist())
+        checksum = hex(binascii.crc32(zip_info) & 0xffffffff)
+
+    return zip_filename, checksum
