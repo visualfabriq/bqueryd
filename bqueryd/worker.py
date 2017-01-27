@@ -251,6 +251,7 @@ class WorkerNode(object):
             if os.path.exists(prod_path):
                 shutil.rmtree(prod_path, ignore_errors=True)
             ready_path = os.path.join(ticket_path, filename)
+            self.logger.debug("moving %s %s" % (ready_path, prod_path))
             os.rename(ready_path, prod_path)
 
         shutil.rmtree(ticket_path, ignore_errors=True)
