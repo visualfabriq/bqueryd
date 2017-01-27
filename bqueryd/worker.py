@@ -219,11 +219,12 @@ class WorkerNode(object):
 
         # unzip the tmp file to the filename
         ticket = msg['ticket']
-        ticket_path = os.path.join(bqueryd.INCOMING, ticket)
-        if not os.path.exists(ticket_path):
-            os.mkdir(ticket_path)
+        #ticket_path = os.path.join(bqueryd.INCOMING, ticket)
+        #if not os.path.exists(ticket_path):
+        #    os.mkdir(ticket_path)
 
-        temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
+        # temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
+        temp_path = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
         # if the signature already exists, first remove it.
         if os.path.exists(temp_path):
             shutil.rmtree(temp_path, ignore_errors=True)
@@ -240,6 +241,7 @@ class WorkerNode(object):
     def handle_movebcolz(self, msg):
         # A notification from the controller that all files are downloaded on all nodes, the files in this ticket can be moved into place
         self.logger.debug('movebcolz %s' % msg)
+        return
         ticket = msg['ticket']
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
         if not os.path.exists(ticket_path):

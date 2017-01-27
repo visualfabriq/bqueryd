@@ -185,7 +185,7 @@ class ControllerNode(object):
                 worker_id = self.find_free_worker()
 
             if not worker_id:
-                self.logger.debug('No free workers at this time')
+                # self.logger.debug('No free workers at this time')
                 self.worker_out_messages.append(msg)
                 break
 
@@ -247,12 +247,12 @@ class ControllerNode(object):
             return
 
         if msg.isa(BusyMessage):
-            self.logger.debug('Worker %s sent BusyMessage' % worker_id)
+            # self.logger.debug('Worker %s sent BusyMessage' % worker_id)
             self.worker_map[worker_id]['busy'] = True
             return
 
         if msg.isa(DoneMessage):
-            self.logger.debug('Worker %s sent DoneMessage' % worker_id)
+            # self.logger.debug('Worker %s sent DoneMessage' % worker_id)
             self.worker_map[worker_id]['busy'] = False
             return
 
@@ -263,7 +263,7 @@ class ControllerNode(object):
         if msg.isa(FileDownloadProgress):
             ticket = msg['ticket']
             dest = msg['dest']
-            filename = msg['ticket']
+            filename = msg['filename']
             for x in ('progress', 'size'):
                 self.downloads[ticket]['progress'][dest].setdefault(filename, {'started':time.time()})[x] = msg.get(x)
             return
@@ -358,6 +358,7 @@ class ControllerNode(object):
         for filename in filenames:
             params['args'] = list(args)
             params['args'][0] = filename
+            params['kwargs'] = kwargs
             msg.add_as_binary('params', params)
 
             # Make up a new token for the message sent to the workers, and collect the responses using that id
@@ -415,25 +416,31 @@ class ControllerNode(object):
     def check_downloads(self):
         completed_tickets = []
         for ticket, download in self.downloads.items():
-            in_progress_count = 0
-            for controller_address, progress in download.get('progress', {}).items():
-                # progress is a dict keyed on filename
-                for filename, fileprogress in progress.items():
-                    if fileprogress.get('progress', 0) > -1:
-                        in_progress_count += 1
-                # if progress is an empty dict, no workers have started yet so increment in_progress_count
+
+            in_progress_count = 0 
+            total_count = 0
+
+            node_progress_dict = download.get('progress', {})
+            for controller_address, progress in node_progress_dict.items():
                 if not progress:
                     in_progress_count += 1
 
+                # progress is a dict keyed on filename
+                for filename, fileprogress in progress.items():
+                    total_count += 1
+                    if fileprogress.get('progress', 0) > -1:
+                        in_progress_count += 1
+
             if in_progress_count < 1:
+                self.logger.debug(node_progress_dict)
                 # Send msg to all to move the signature from READY to production and rename
                 m = Message({'payload':'movebcolz', 'ticket':ticket})
-                for controller_address in download.get('progress', {}):
+                for controller_address in node_progress_dict:
                     self.send(controller_address, m.to_json())
                 completed_tickets.append(ticket)
 
             # TODO only using the count of others here, do something more reliable
-            if not download.get('reply') and in_progress_count == len(self.others) + 1:
+            if not download.get('reply') and len(node_progress_dict) == len(self.others) + 1:
                 self.logger.debug('OK, ALL nodes in progress downloading file')
                 # Return the ticket number to the calling RPC...
                 rpc_id = download.get('rpc_id')
