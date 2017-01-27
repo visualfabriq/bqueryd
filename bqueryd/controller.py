@@ -418,6 +418,7 @@ class ControllerNode(object):
         for filename in filenames:
             params['args'] = list(args)
             params['args'][0] = filename
+            params['kwargs'] = kwargs
             msg.add_as_binary('params', params)
 
             # Make up a new token for the message sent to the workers, and collect the responses using that id

@@ -220,11 +220,12 @@ class WorkerNode(object):
 
         # unzip the tmp file to the filename
         ticket = msg['ticket']
-        ticket_path = os.path.join(bqueryd.INCOMING, ticket)
-        if not os.path.exists(ticket_path):
-            os.mkdir(ticket_path)
+        #ticket_path = os.path.join(bqueryd.INCOMING, ticket)
+        #if not os.path.exists(ticket_path):
+        #    os.mkdir(ticket_path)
 
-        temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
+        # temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
+        temp_path = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
         # if the signature already exists, first remove it.
         if os.path.exists(temp_path):
             shutil.rmtree(temp_path, ignore_errors=True)
@@ -244,7 +245,6 @@ class WorkerNode(object):
         ticket = msg['ticket']
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
         if not os.path.exists(ticket_path):
-            self.logger.debug('%s does not exist' % ticket_path)
             return
 
         for filename in os.listdir(ticket_path):
@@ -252,6 +252,7 @@ class WorkerNode(object):
             if os.path.exists(prod_path):
                 shutil.rmtree(prod_path, ignore_errors=True)
             ready_path = os.path.join(ticket_path, filename)
+            self.logger.debug("moving %s %s" % (ready_path, prod_path))
             os.rename(ready_path, prod_path)
 
         shutil.rmtree(ticket_path, ignore_errors=True)
