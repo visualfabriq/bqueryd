@@ -101,7 +101,7 @@ class WorkerNode(object):
                     # self.logger.debug("heartbeat to %s" % data['address'])
 
     def go(self):
-
+        self.logger.debug('Starting')
         self.running = True
         while self.running:
             self.heartbeat()
@@ -192,7 +192,8 @@ class WorkerNode(object):
             filename = kwargs.get('filename')
             ticket = msg.get('ticket')
             addr = str(msg.get('source'))
-            self.logger.debug('At %s of %s for %s %s :: %s' % (progress, size, ticket, addr, filename))
+            if progress == 0:
+                self.logger.debug('At %s of %s for %s %s :: %s' % (progress, size, ticket, addr, filename))
             tmp = FileDownloadProgress(msg)
             tmp['filename'] = filename
             tmp['progress'] = progress
@@ -239,7 +240,7 @@ class WorkerNode(object):
 
     def handle_movebcolz(self, msg):
         # A notification from the controller that all files are downloaded on all nodes, the files in this ticket can be moved into place
-        self.logger.debug('movebcolz %s' % msg)
+        self.logger.debug('movebcolz %s' % msg['ticket'])
         ticket = msg['ticket']
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
         if not os.path.exists(ticket_path):
