@@ -18,6 +18,49 @@ POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, thi
 DEAD_WORKER_TIMEOUT = 1 * 60 # time in seconds that we wait for a worker to respond before being removed
 HEARTBEAT_INTERVAL = 15 # time in seconds between doing heartbeats
 
+class DownloadProgressTicket(object):
+    def __init__(self, ticket, rpc_id, filenames):
+        self.ticket = ticket
+        self.rpc_id = rpc_id
+        self.rpc_reply = False
+        self.created = time.time()
+        self.files_progress = {} # for each file being downloaded, keep a dict of nodes doing them
+        self.nodes = {}
+        for x in filenames:
+            self.files_progress[x] = {}
+
+    def is_busy(self):
+        if not self.files_progress:
+            return True
+        for np in self.files_progress.values():
+            if not np:
+                return True
+            for npv in np.values():
+                if not npv.get('done'):
+                    return True
+        return False
+
+    def add_node(self, node_address):
+        self.nodes[node_address] = None
+        for f_progress in self.files_progress.values():
+            f_progress.setdefault(node_address, {})
+
+    def update_progress(self, node_address, filename, progress, size):
+        self.nodes[node_address] = time.time()
+        file_progress = self.files_progress[filename]
+        progress_details = file_progress.setdefault(node_address, {'started':time.time()})
+        if progress < 0:
+            progress_details['done'] = True
+            del progress_details['progress']
+            del progress_details['size']
+        else:
+            progress_details['progress'] = progress
+            progress_details['size'] = size
+
+    def to_dict(self):
+        data = {'ticket': self.ticket, 'created': self.created, 'busy': self.is_busy(), 'nodes':self.nodes.keys()}
+        data['progress'] = self.files_progress
+        return data
 
 class ControllerNode(object):
 
@@ -185,7 +228,7 @@ class ControllerNode(object):
                 worker_id = self.find_free_worker()
 
             if not worker_id:
-                self.logger.debug('No free workers at this time')
+                # self.logger.debug('No free workers at this time')
                 self.worker_out_messages.append(msg)
                 break
 
@@ -220,6 +263,7 @@ class ControllerNode(object):
             if addr and node:
                 self.others[addr]['node'] = node
                 self.others[addr]['uptime'] = uptime
+                self.others[addr]['downloads'] = data.get('downloads', {})
         elif msg.isa('movebcolz'):
             msg['worker_id'] = '__needs_local__'
             self.worker_out_messages.append(msg)
@@ -247,12 +291,12 @@ class ControllerNode(object):
             return
 
         if msg.isa(BusyMessage):
-            self.logger.debug('Worker %s sent BusyMessage' % worker_id)
+            # self.logger.debug('Worker %s sent BusyMessage' % worker_id)
             self.worker_map[worker_id]['busy'] = True
             return
 
         if msg.isa(DoneMessage):
-            self.logger.debug('Worker %s sent DoneMessage' % worker_id)
+            # self.logger.debug('Worker %s sent DoneMessage' % worker_id)
             self.worker_map[worker_id]['busy'] = False
             return
 
@@ -263,9 +307,15 @@ class ControllerNode(object):
         if msg.isa(FileDownloadProgress):
             ticket = msg['ticket']
             dest = msg['dest']
-            filename = msg['ticket']
-            for x in ('progress', 'size'):
-                self.downloads[ticket]['progress'][dest].setdefault(filename, {'started':time.time()})[x] = msg.get(x)
+            filename = msg['filename']
+            progress = msg['progress']
+            size = msg['size']
+
+            dlpt = self.downloads.get(ticket)
+            if not dlpt:
+                self.logger.debug("FileDownloadProgress received for ticket %s which is not in downloads" % ticket)
+                return
+            dlpt.update_progress(dest, filename, progress, size)
             return
 
         if 'token' in msg:
@@ -298,16 +348,26 @@ class ControllerNode(object):
                 result = "A download needs kwargs: (filenames=, bucket=)"
             else:
                 ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
-                self.downloads[ticket] = {'rpc_id':sender, 'created':time.time(), 'progress':{}}
+                self.downloads[ticket] = DownloadProgressTicket(ticket, sender, filenames)
+
                 del msg['token'] # delete the incoming token so we don't send replies back to caller directly
                 msg['source'] = self.address
                 msg['ticket'] = ticket
                 for o in self.others:
                     mm = msg.copy()
                     self.send(o, mm.to_json())
-                    self.downloads[ticket]['progress'][o] = {}
-                self.downloads[ticket]['progress'][self.address] = {}
+                    self.downloads[ticket].add_node(o)
+                self.downloads[ticket].add_node(self.address)
                 result = self.handle_download(msg)
+        elif msg.isa('download_progress'):
+            args, kwargs = msg.get_args_kwargs()
+            controller_address = kwargs.get('controller_address')
+            ticket = kwargs.get('ticket')
+            if controller_address == self.address:
+                result = self.downloads.get('ticket')
+            else:
+                self.send(controller_address, msg.to_json())
+
         elif msg['payload'] in ('sleep',):
             self.worker_out_messages.append(msg.copy())
             result = None
@@ -393,7 +453,7 @@ class ControllerNode(object):
         data = {'msg_count_in': self.msg_count_in, 'node': self.node_name,
                 'workers': self.worker_map,
                 'last_heartbeat': self.last_heartbeat, 'address': self.address,
-                'others': self.others, 'downloads': self.downloads,
+                'others': self.others, 'downloads': dict((x.ticket, x.to_dict()) for x in self.downloads.values()),
                 'uptime': int(time.time() - self.start_time), 'start_time': self.start_time
                 }
         return data
@@ -414,34 +474,23 @@ class ControllerNode(object):
 
     def check_downloads(self):
         completed_tickets = []
-        for ticket, download in self.downloads.items():
-            in_progress_count = 0
-            for controller_address, progress in download.get('progress', {}).items():
-                # progress is a dict keyed on filename
-                for filename, fileprogress in progress.items():
-                    if fileprogress.get('progress', 0) > -1:
-                        in_progress_count += 1
-                # if progress is an empty dict, no workers have started yet so increment in_progress_count
-                if not progress:
-                    in_progress_count += 1
-
-            if in_progress_count < 1:
+        for ticket, dlpt in self.downloads.items():
+            if not dlpt.is_busy():
+                self.logger.debug('Download done %s' % dlpt.to_dict())
                 # Send msg to all to move the signature from READY to production and rename
                 m = Message({'payload':'movebcolz', 'ticket':ticket})
-                for controller_address in download.get('progress', {}):
+                for controller_address in dlpt.nodes:
                     self.send(controller_address, m.to_json())
                 completed_tickets.append(ticket)
 
-            # TODO only using the count of others here, do something more reliable
-            if not download.get('reply') and in_progress_count == len(self.others) + 1:
+            if not dlpt.rpc_reply and (len(dlpt.nodes) == len(self.others) + 1):
                 self.logger.debug('OK, ALL nodes in progress downloading file')
                 # Return the ticket number to the calling RPC...
-                rpc_id = download.get('rpc_id')
+                rpc_id = dlpt.rpc_id
+                dlpt.rpc_reply = True
                 rpc_result = Message({'token':binascii.hexlify(rpc_id)})
-                rpc_result.add_as_binary('result', ticket)
+                rpc_result.add_as_binary('result', {'ticket': ticket, 'controller_address': self.address})
                 self.rpc_results.append(rpc_result)
-                download['reply'] = True # get rid of the rpc id , we have already replied
-                del download['rpc_id']
         for ticket in completed_tickets:
             del self.downloads[ticket]
 
