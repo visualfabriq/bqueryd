@@ -14,6 +14,7 @@ import logging
 import random
 import bqueryd
 import socket
+import pandas as pd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage, FileDownloadProgress
 
@@ -157,12 +158,17 @@ class WorkerNode(object):
             raise Exception('Path %s does not exist' % rootdir)
 
         ct = bquery.ctable(rootdir=rootdir, mode='r')
-        ct.auto_cache = False
 
         # prepare filter
         if not where_terms_list:
             bool_arr = None
         else:
+            # quickly verify the where_terms_list
+            if not ct.where_terms_factorization_check(where_terms_list):
+                # return an empty result because the where terms do not give a result for this ctable
+                msg.add_as_binary('result', pd.DataFrame())
+                return msg
+            # else create the boolean array
             bool_arr = ct.where_terms(where_terms_list)
 
         # expand filter column check
