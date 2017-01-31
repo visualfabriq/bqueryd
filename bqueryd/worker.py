@@ -270,6 +270,13 @@ class WorkerNode(object):
             return
         elif msg.isa('info'):
             msg = self.prepare_wrm()
+        elif msg.isa('loglevel'):
+            args, kwargs = msg.get_args_kwargs()
+            if args:
+                loglevel = {'info': logging.INFO, 'debug': logging.DEBUG}.get(args[0], logging.INFO)
+                self.logger.setLevel(loglevel)
+                self.logger.info("Set loglevel to %s" % loglevel)
+            return
         elif msg.isa('sleep'):
             args, kwargs = msg.get_args_kwargs()
             time.sleep(float(args[0]))

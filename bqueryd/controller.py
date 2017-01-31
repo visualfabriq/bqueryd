@@ -332,6 +332,20 @@ class ControllerNode(object):
         result = "Sorry, I don't understand you"
         if msg.isa('ping'):
             result = 'pong'
+        elif msg.isa('loglevel'):
+            args, kwargs = msg.get_args_kwargs()
+            if not args:
+                result = "You need to specify a loglevel as first arg"
+            else:
+                loglevel = {'info': logging.INFO, 'debug': logging.DEBUG}.get(args[0], logging.INFO)
+                self.logger.setLevel(loglevel)
+                m = msg.copy()
+                m['token'] = self.address
+                for x in self.others:
+                    self.send(x, m.to_json(), is_rpc=True)
+                for x in self.worker_map:
+                    self.send(x, m.to_json())
+                result = "OK, loglevel set to %s" % loglevel
         elif msg.isa('info'):
             result = self.get_info()
         elif msg.isa('kill'):
