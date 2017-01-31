@@ -8,7 +8,7 @@ import ConfigParser
 config = ConfigParser.RawConfigParser()
 config.read(['/etc/bqueryd.cfg', os.path.expanduser('~/.bqueryd.cfg')])
 
-redis_url=config.get('Redis' 'redis_url')
+redis_url=config.get('Main', 'redis_url')
 
 if __name__ == '__main__':
     if '-v' in sys.argv:
