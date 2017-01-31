@@ -209,7 +209,7 @@ class ControllerNode(object):
 
             msg_id = binascii.unhexlify(msg.get('token'))
             self.send(msg_id, msg.to_json(), is_rpc=True)
-            self.logger.debug('Msg handled %s' % msg.get('token', '?'))
+            self.logger.debug('RPC Msg handled: %s' % msg.get('payload', '?'))
 
     def handle_out(self):
         self.process_sink_results()
@@ -327,7 +327,7 @@ class ControllerNode(object):
         # RPC calls have a binary identiy set, hexlify it to make it readable and serializable
         msg_id = binascii.hexlify(sender)
         msg['token'] = msg_id
-        self.logger.debug('RPC received %s' % msg_id)
+        # self.logger.debug('RPC received %s' % msg_id)
 
         result = "Sorry, I don't understand you"
         if msg.isa('ping'):
