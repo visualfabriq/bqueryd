@@ -286,8 +286,8 @@ class ControllerNode(object):
             # self.logger.debug('Worker registered %s' % worker_id)
             for filename in msg.get('data_files', []):
                 self.files_map.setdefault(filename, set()).add(worker_id)
-            self.worker_map[worker_id]['node'] = msg['node']
-            self.worker_map[worker_id]['uptime'] = msg['uptime']
+            self.worker_map[worker_id]['node'] = msg.get('node', '...')
+            self.worker_map[worker_id]['uptime'] = msg.get('uptime', 0)
             return
 
         if msg.isa(BusyMessage):
