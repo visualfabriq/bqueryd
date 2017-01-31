@@ -1,5 +1,6 @@
 #!/srv/python/venv/bin/ipython -i
 import bqueryd
+import os
 import sys
 import logging
 import ConfigParser
