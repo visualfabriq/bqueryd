@@ -131,7 +131,7 @@ class WorkerNode(object):
                     except Exception, e:
                         tmp = ErrorMessage(msg)
                         tmp['payload'] = traceback.format_exc()
-                        self.logger.debug(tmp['payload'])
+                        self.logger.exception(tmp['payload'])
                     self.send_to_all(DoneMessage()) # Send an empty mesage to all controllers, this flags you as 'Done'
                     if tmp:
                         self.socket.send_multipart([sender, tmp.to_json()])
