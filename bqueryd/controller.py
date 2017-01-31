@@ -17,6 +17,7 @@ from bqueryd.util import get_my_ip, bind_to_random_port
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
 DEAD_WORKER_TIMEOUT = 1 * 60 # time in seconds that we wait for a worker to respond before being removed
 HEARTBEAT_INTERVAL = 15 # time in seconds between doing heartbeats
+MIN_CALCWORKER_COUNT = 0.25 # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
 
 class DownloadProgressTicket(object):
     def __init__(self, ticket, rpc_id, filenames):
@@ -152,6 +153,8 @@ class ControllerNode(object):
             free_workers.append(worker_id)
             if needs_local and worker.get('node') != self.node_name:
                 continue
+            if needs_local and worker.get('reserved_4_calc'):
+                continue
             free_local_workers.append(worker_id)
         # if there are no free workers at all, just bail
         if not free_workers:
@@ -163,6 +166,13 @@ class ControllerNode(object):
         if free_local_workers:
             return random.choice(free_local_workers)
         return random.choice(free_workers)
+
+    def calc_num_reserved_workers(self):
+        # We want to reserve a number of local workers to not take part in 'local' operation like file downloads
+        # to prevent 'swamping' of the controller with file download messages and never allowing calc messages to be
+        # let through
+        rc = len([worker_id for worker_id, worker in self.worker_map.items() if worker.get('reserved_4_calc') == True])
+        return float(rc) / len(self.worker_map)
 
     def process_sink_results(self):
         while self.rpc_results:
@@ -288,6 +298,9 @@ class ControllerNode(object):
                 self.files_map.setdefault(filename, set()).add(worker_id)
             self.worker_map[worker_id]['node'] = msg.get('node', '...')
             self.worker_map[worker_id]['uptime'] = msg.get('uptime', 0)
+            if self.worker_map[worker_id]['node'] == self.node_name:
+                if self.calc_num_reserved_workers() <= MIN_CALCWORKER_COUNT:
+                    self.worker_map[worker_id]['reserved_4_calc'] = True
             return
 
         if msg.isa(BusyMessage):
