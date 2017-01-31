@@ -101,7 +101,7 @@ class WorkerNode(object):
                     # self.logger.debug("heartbeat to %s" % data['address'])
 
     def go(self):
-        self.logger.debug('Starting')
+        self.logger.info('Starting')
         self.running = True
         while self.running:
             self.heartbeat()
@@ -135,7 +135,7 @@ class WorkerNode(object):
                     self.send_to_all(DoneMessage()) # Send an empty mesage to all controllers, this flags you as 'Done'
                     if tmp:
                         self.socket.send_multipart([sender, tmp.to_json()])
-        self.logger.debug('Stopping')
+        self.logger.info('Stopping')
 
     def send_to_all(self, msg):
         for controller in self.controllers:

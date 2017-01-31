@@ -496,7 +496,7 @@ class ControllerNode(object):
             del self.downloads[ticket]
 
     def go(self):
-        self.logger.debug('Started')
+        self.logger.info('Started')
 
         while self.is_running:
             try:
@@ -515,7 +515,7 @@ class ControllerNode(object):
             except:
                 self.logger.error("Exception %s" % traceback.format_exc())
 
-        self.logger.debug('Stopping')
+        self.logger.info('Stopping')
 
 def create_result_from_response(params, result_list):
     if not result_list:
