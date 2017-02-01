@@ -37,8 +37,9 @@ class WorkerNode(object):
         context = zmq.Context()
         self.socket = context.socket(zmq.ROUTER)
         self.socket.setsockopt(zmq.LINGER, 0)
-        self.socket.setsockopt(zmq.RCVTIMEO, 1000) # Short timeout
         self.socket.identity = self.worker_id
+        self.poller = zmq.Poller()
+        self.poller.register(self.socket, zmq.POLLIN|zmq.POLLOUT)
         self.redis_server = redis.from_url(redis_url)
         self.controllers = {} # Keep a dict of timestamps when you last spoke to controllers
         self.check_controllers()
@@ -46,10 +47,12 @@ class WorkerNode(object):
         self.start_time = time.time()
         self.logger = bqueryd.logger.getChild('worker '+self.worker_id)
         self.logger.setLevel(loglevel)
-        self.incoming = {None:[]} # A dict of message buckets to round-robin process
 
-    def incoming_length(self):
-        return sum(len(x) for x in self.incoming.values())
+    def send(self, addr, msg):
+        try:
+            self.socket.send_multipart([addr, msg.to_json()])
+        except zmq.ZMQError, ze:
+            self.logger.critical("Problem with %s: %s" % (addr, ze))
 
     def check_controllers(self):
         # Check the Redis set of controllers to see if any new ones have appeared,
@@ -100,73 +103,60 @@ class WorkerNode(object):
             wrm = self.prepare_wrm()
             for controller, data in self.controllers.items():
                 if has_new_files or (time.time() - data['last_seen'] > WRM_DELAY):
-                    self.socket.send_multipart([controller, wrm.to_json()])
+                    self.send(controller, wrm)
                     data['last_sent'] = time.time()
                     # self.logger.debug("heartbeat to %s" % data['address'])
 
     def handle_in(self):
-        while True:
-            try:
-                tmp = self.socket.recv_multipart()
-            except zmq.Again:
-                break
-            if len(tmp) != 2:
-                self.logger.critical('Received a msg with len != 2, something seriously wrong. ')
-                continue
+        try:
+            tmp = self.socket.recv_multipart()
+        except zmq.Again:
+            return
+        if len(tmp) != 2:
+            self.logger.critical('Received a msg with len != 2, something seriously wrong. ')
+            return
 
-            sender, msg_buf = tmp
-            msg = msg_factory(msg_buf)
-            msg['sender'] = sender
+        sender, msg_buf = tmp
+        msg = msg_factory(msg_buf)
 
-            data = self.controllers.get(sender)
-            if not data:
-                self.logger.critical('Received a msg from %s - this is an unknown sender' % sender)
-                continue
-            data['last_seen'] = time.time()
-            # self.logger.debug('Received from %s' % sender)
+        data = self.controllers.get(sender)
+        if not data:
+            self.logger.critical('Received a msg from %s - this is an unknown sender' % sender)
+            return
+        data['last_seen'] = time.time()
+        # self.logger.debug('Received from %s' % sender)
 
-            # Add this message to an affinity bucket that is round-robin processed to ensure fairness
-            affinity = msg.get('affinity')
-            self.incoming.setdefault(affinity, []).append(msg)
-
-    def process(self):
         # TODO Notify Controllers that we are busy, no more messages to be sent
         # The above busy notification is not perfect as other messages might be on their way already
         # but for long-running queries it will at least ensure other controllers
         # don't try and overuse this node by filling up a queue
         busy_msg = BusyMessage()
-        busy_msg['incoming_buffer_length'] = self.incoming_length()
-
         self.send_to_all(busy_msg)
-        while self.incoming_length() > 0:
-            for bucket in self.incoming.values():
-                if not bucket:
-                    continue
-                msg = bucket.pop()
-                try:
-                    tmp = self.handle(msg)
-                except Exception, e:
-                    tmp = ErrorMessage(msg)
-                    tmp['payload'] = traceback.format_exc()
-                    self.logger.exception(tmp['payload'])
-                if tmp:
-                    sender = msg.get('sender')
-                    self.socket.send_multipart([sender, tmp.to_json()])
 
-        self.send_to_all(DoneMessage())  # Send an empty mesage to all controllers, this flags you as 'Done'
+        try:
+            tmp = self.handle(msg)
+        except Exception, e:
+            tmp = ErrorMessage(msg)
+            tmp['payload'] = traceback.format_exc()
+            self.logger.exception(tmp['payload'])
+        if tmp:
+            self.send(sender, tmp)
+
+        self.send_to_all(DoneMessage())  # Send a DoneMessage to all controllers, this flags you as 'Done'. Duh
 
     def go(self):
         self.logger.info('Starting')
         self.running = True
         while self.running:
             self.heartbeat()
-            self.handle_in()
-            self.process()
+            for sock, event in self.poller.poll(timeout=POLLING_TIMEOUT):
+                if event & zmq.POLLIN:
+                    self.handle_in()
         self.logger.info('Stopping')
 
     def send_to_all(self, msg):
         for controller in self.controllers:
-            self.socket.send_multipart([controller, msg.to_json()])
+            self.send(controller, msg)
 
     def handle_calc(self, msg):
         args, kwargs = msg.get_args_kwargs()
@@ -230,7 +220,7 @@ class WorkerNode(object):
             tmp['filename'] = filename
             tmp['progress'] = progress
             tmp['size'] = size
-            self.socket.send_multipart([addr, tmp.to_json()])
+            self.send(addr, tmp)
         return _fn
 
     def handle_download(self, msg):
@@ -313,7 +303,7 @@ class WorkerNode(object):
             args, kwargs = msg.get_args_kwargs()
             time.sleep(float(args[0]))
             snore = 'z'*random.randint(1,20)
-            self.logger.debug(snore + msg.get('affinity', ''))
+            self.logger.debug(snore)
             msg.add_as_binary('result', snore)
         elif msg.isa('download'):
             msg = self.handle_download(msg)
