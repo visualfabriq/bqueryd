@@ -264,6 +264,11 @@ class ControllerNode(object):
     def handle_peer(self, sender, msg):
         if msg.isa('download'):
             self.handle_download(msg)
+        elif msg.isa('loglevel'):
+            args, kwargs = msg.get_args_kwargs()
+            loglevel = {'info': logging.INFO, 'debug': logging.DEBUG}.get(args[0], logging.INFO)
+            self.logger.setLevel(loglevel)
+            self.logger.info("Set loglevel to %s" % loglevel)
         elif msg.isa('info'):
             # Another node registered with you and is sending some info
             data = msg.get_from_binary('result')
@@ -351,15 +356,14 @@ class ControllerNode(object):
             if not args:
                 result = "You need to specify a loglevel as first arg"
             else:
-                loglevel = {'info': logging.INFO, 'debug': logging.DEBUG}.get(args[0], logging.INFO)
-                self.logger.setLevel(loglevel)
                 m = msg.copy()
-                m['token'] = self.address
+                del m['token']
                 for x in self.others:
-                    self.send(x, m.to_json(), is_rpc=True)
+                    self.send(x, m.to_json())
                 for x in self.worker_map:
                     self.send(x, m.to_json())
-                result = "OK, loglevel set to %s" % loglevel
+                self.handle_peer(None, m)
+                result = "OK, loglevel set passed along"
         elif msg.isa('info'):
             result = self.get_info()
         elif msg.isa('kill'):
@@ -538,7 +542,7 @@ class ControllerNode(object):
             del self.downloads[ticket]
 
     def go(self):
-        self.logger.info('Started')
+        self.logger.info('Starting')
 
         while self.is_running:
             try:
