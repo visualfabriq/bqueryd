@@ -65,7 +65,7 @@ class DownloadProgressTicket(object):
 
 class ControllerNode(object):
 
-    def __init__(self, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG):
+    def __init__(self, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO):
 
         self.redis_url = redis_url
         self.redis_server = redis.from_url(redis_url)
@@ -305,6 +305,7 @@ class ControllerNode(object):
 
         if msg.isa(BusyMessage):
             # self.logger.debug('Worker %s sent BusyMessage' % worker_id)
+            self.worker_map[worker_id]['incoming_buffer_length'] = msg.get('incoming_buffer_length', 0)
             self.worker_map[worker_id]['busy'] = True
             return
 
@@ -396,8 +397,19 @@ class ControllerNode(object):
                 self.send(controller_address, msg.to_json())
 
         elif msg['payload'] in ('sleep',):
-            self.worker_out_messages.append(msg.copy())
-            result = None
+            args, kwargs = msg.get_args_kwargs()
+            if args:
+                if type(args[0]) is int:
+                    self.worker_out_messages.append(msg.copy())
+                else:
+                    for x in args[0]:
+                        mm = msg.copy()
+                        mm['affinity'] = kwargs.get('affinity')
+                        mm.set_args_kwargs([x], kwargs)
+                        self.worker_out_messages.append(mm)
+                result = None
+            else:
+                result = "Sleep needs an int or list of ints as arg[0]"
         elif msg['payload'] in ('groupby',):
             result = self.handle_calc_message(msg)  # if result is not None something happened, return to caller immediately
 
@@ -422,6 +434,9 @@ class ControllerNode(object):
 
     def handle_calc_message(self, msg):
         args, kwargs = msg.get_args_kwargs()
+        affinity = kwargs.get('affinity')
+        if affinity:
+            msg['affinity'] = affinity
 
         if len(args) != 4:
             return 'Error, No correct args given, expecting: ' + \
