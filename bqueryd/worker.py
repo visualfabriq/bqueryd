@@ -16,6 +16,7 @@ import random
 import bqueryd
 import socket
 import smart_open
+from ssl import SSLError
 import pandas as pd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage, FileDownloadProgress
@@ -255,16 +256,27 @@ class WorkerNode(object):
             s3_bucket = s3_conn.get_bucket(bucket, validate=False)
             k = s3_bucket.get_key(filename, validate=False)
             k.open()
+            size = k.size
             fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
 
-            with smart_open.smart_open(k) as fin, open(tmp_filename, 'w') as fout:
-                buf = True
-                progress = 0
-                while buf:
-                    buf = fin.read(16384)
-                    fout.write(buf)
-                    progress += len(buf)
-                    the_callback(progress, k.size)
+            # See: https://github.com/RaRe-Technologies/smart_open/commit/a751b7575bfc5cc277ae176cecc46dbb109e47a4
+            # Sometime we get timeout errors on the SSL connections
+            for x in range(3):
+                try:
+                    with smart_open.smart_open(k) as fin, open(tmp_filename, 'w') as fout:
+                        buf = True
+                        progress = 0
+                        while buf:
+                            buf = fin.read(16384)
+                            fout.write(buf)
+                            progress += len(buf)
+                            the_callback(progress, size)
+                    break
+                except SSLError, e:
+                    if x == 2:
+                        raise e
+                    else:
+                        pass
 
             # unzip the tmp file to the filename
             # if temp_path already exists, first remove it.
