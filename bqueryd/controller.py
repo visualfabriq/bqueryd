@@ -408,14 +408,18 @@ class ControllerNode(object):
                     self.downloads[ticket].add_node(o)
                 self.downloads[ticket].add_node(self.address)
                 result = self.handle_download(msg)
-        elif msg.isa('download_progress'):
+        elif msg.isa('bumpdownload'):
             args, kwargs = msg.get_args_kwargs()
-            controller_address = kwargs.get('controller_address')
-            ticket = kwargs.get('ticket')
-            if controller_address == self.address:
-                result = self.downloads.get('ticket')
+            if not args:
+                result = "Need a ticket number as first arg"
             else:
-                self.send(controller_address, msg.to_json())
+                ticket = args[0]
+                if ticket in self.downloads:
+                    del self.downloads[ticket]
+                    result = "OK, ticket %s bumped" % ticket
+                else:
+                    result = "Ticket %s not found on this controller" % ticket
+                    # TODO Also bump tickets on other controllers
 
         elif msg['payload'] in ('sleep',):
             args, kwargs = msg.get_args_kwargs()
