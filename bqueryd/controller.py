@@ -320,13 +320,14 @@ class ControllerNode(object):
             self.worker_map[worker_id]['node'] = msg.get('node', '...')
             self.worker_map[worker_id]['uptime'] = msg.get('uptime', 0)
             if self.worker_map[worker_id]['node'] == self.node_name:
-                if self.calc_num_reserved_workers() <= MIN_CALCWORKER_COUNT:
+                num_reserved = self.calc_num_reserved_workers()
+                if num_reserved <= MIN_CALCWORKER_COUNT:
+                    self.logger.debug('Making reserved = %s' % num_reserved)
                     self.worker_map[worker_id]['reserved_4_calc'] = True
             return
 
         if msg.isa(BusyMessage):
             # self.logger.debug('Worker %s sent BusyMessage' % worker_id)
-            self.worker_map[worker_id]['incoming_buffer_length'] = msg.get('incoming_buffer_length', 0)
             self.worker_map[worker_id]['busy'] = True
             return
 
