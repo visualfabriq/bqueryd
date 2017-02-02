@@ -1,4 +1,5 @@
 import os
+import errno
 import time
 import zmq
 import bquery
@@ -232,31 +233,41 @@ class WorkerNode(object):
         if not (filename and bucket):
             raise Exception('[filename, bucket] args are all required')
 
-        # get file from S3
-        s3_conn = boto.connect_s3()
-        s3_bucket = s3_conn.get_bucket(bucket, validate=False)
-        k = s3_bucket.get_key(filename, validate=False)
-        fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
-
+        # Used to send progress messages to caller
         the_callback = self.file_downloader_callback(msg)
-        k.get_contents_to_filename(tmp_filename, cb=the_callback)
 
-        # unzip the tmp file to the filename
         ticket = msg['ticket']
-        #ticket_path = os.path.join(bqueryd.INCOMING, ticket)
-        #if not os.path.exists(ticket_path):
-        #    os.mkdir(ticket_path)
-
-        # temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
-        temp_path = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
-        # if the signature already exists, first remove it.
+        ticket_path = os.path.join(bqueryd.INCOMING, ticket)
+        self.logger.info("Downloading %s s3://%s/%s" % (ticket, bucket, filename))
+        if not os.path.exists(ticket_path):
+            try:
+                os.mkdir(ticket_path)
+            except OSError, ose:
+                if ose == errno.EEXIST:
+                    pass # different workers might try to create the same directory at _just_ the same time causing the previous check to fail
+        temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
         if os.path.exists(temp_path):
-            shutil.rmtree(temp_path, ignore_errors=True)
-        with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
-            myzip.extractall(temp_path)
-        self.logger.debug("Downloaded %s" % temp_path)
-        if os.path.exists(tmp_filename):
-            os.remove(tmp_filename)
+            self.logger.info("%s exists, skipping download" % temp_path)
+        else:
+            # get file from S3
+            s3_conn = boto.connect_s3()
+            s3_bucket = s3_conn.get_bucket(bucket, validate=False)
+            k = s3_bucket.get_key(filename, validate=False)
+            fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
+
+
+            k.get_contents_to_filename(tmp_filename, cb=the_callback)
+
+
+            # unzip the tmp file to the filename
+            # if temp_path already exists, first remove it.
+            if os.path.exists(temp_path):
+                shutil.rmtree(temp_path, ignore_errors=True)
+            with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
+                myzip.extractall(temp_path)
+            self.logger.debug("Downloaded %s" % temp_path)
+            if os.path.exists(tmp_filename):
+                os.remove(tmp_filename)
         msg.add_as_binary('result', temp_path)
         the_callback(-1, -1)
 
@@ -264,7 +275,7 @@ class WorkerNode(object):
 
     def handle_movebcolz(self, msg):
         # A notification from the controller that all files are downloaded on all nodes, the files in this ticket can be moved into place
-        self.logger.debug('movebcolz %s' % msg['ticket'])
+        self.logger.info('movebcolz %s' % msg['ticket'])
         ticket = msg['ticket']
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
         if not os.path.exists(ticket_path):
