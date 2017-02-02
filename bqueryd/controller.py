@@ -172,8 +172,16 @@ class ControllerNode(object):
         # We want to reserve a number of local workers to not take part in 'local' operation like file downloads
         # to prevent 'swamping' of the controller with file download messages and never allowing calc messages to be
         # let through
-        rc = len([worker_id for worker_id, worker in self.worker_map.items() if worker.get('reserved_4_calc') == True])
-        return float(rc) / len(self.worker_map)
+        reserved_count = 0
+        local_workers = 0
+        for worker_id, worker in self.worker_map.items():
+            if worker['node'] == self.node_name:
+                local_workers += 1
+                if worker.get('reserved_4_calc') == True:
+                    reserved_count += 1
+        if local_workers < 1:
+            return 0
+        return float(reserved_count) / local_workers
 
     def process_sink_results(self):
         while self.rpc_results:
@@ -506,7 +514,7 @@ class ControllerNode(object):
 
     def get_info(self):
         data = {'msg_count_in': self.msg_count_in, 'node': self.node_name,
-                'workers': self.worker_map,
+                'workers': self.worker_map, 'worker_out_messages': [(k,len(v)) for k,v in self.worker_out_messages.items()],
                 'last_heartbeat': self.last_heartbeat, 'address': self.address,
                 'others': self.others, 'downloads': dict((x.ticket, x.to_dict()) for x in self.downloads.values()),
                 'uptime': int(time.time() - self.start_time), 'start_time': self.start_time
