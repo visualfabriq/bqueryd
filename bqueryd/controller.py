@@ -87,7 +87,8 @@ class ControllerNode(object):
         self.rpc_segments = {}  # Certain RPC calls get split and divided over workers, this dict tracks the original RPCs
         self.worker_map = {}  # maintain a list of connected workers TODO get rid of unresponsive ones...
         self.files_map = {}  # shows on which workers a file is available on
-        self.worker_out_messages = []
+        self.worker_out_messages = {None:[]} # A dict of buffers, used to round-robin based on message affinity
+        self.worker_out_messages_sequence = [None] # used to round-robin the outgoing messages
         self.is_running = True
         self.last_heartbeat = 0
         # Keep a list of files presently being downloaded
@@ -222,30 +223,37 @@ class ControllerNode(object):
             self.logger.debug('RPC Msg handled: %s' % msg.get('payload', '?'))
 
     def handle_out(self):
-        self.process_sink_results()
+        # If there have been new affinity keys added, rotate them
+        for x in self.worker_out_messages:
+            if x not in self.worker_out_messages_sequence:
+                self.worker_out_messages_sequence.append(x)
 
-        while self.worker_out_messages:
+        nextq_key = self.worker_out_messages_sequence.pop(0)
+        nextq = self.worker_out_messages.get(nextq_key)
+        self.worker_out_messages_sequence.append(nextq_key)
+        if not nextq:
+            return # the next buffer is empty just return and try the next one in the next round
 
-            msg = self.worker_out_messages.pop()
-            worker_id = msg.get('worker_id')
+        msg = nextq.pop(0)
+        worker_id = msg.get('worker_id')
 
-            # Assumption now is that all workers can serve requests to all files,
-            # TODO We need to change the find_free_worker to take the requested filename into account
-            # find a worker that is free
-            if worker_id == '__needs_local__':
-                worker_id = self.find_free_worker(needs_local=True)
-            elif worker_id is None:
-                worker_id = self.find_free_worker()
+        # Assumption now is that all workers can serve requests to all files,
+        # TODO We need to change the find_free_worker to take the requested filename into account
+        # find a worker that is free
+        if worker_id == '__needs_local__':
+            worker_id = self.find_free_worker(needs_local=True)
+        elif worker_id is None:
+            worker_id = self.find_free_worker()
 
-            if not worker_id:
-                # self.logger.debug('No free workers at this time')
-                self.worker_out_messages.append(msg)
-                break
+        if not worker_id:
+            # self.logger.debug('No free workers at this time')
+            nextq.append(msg)
+            return
 
-            # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
-            self.worker_map[worker_id]['last_sent'] = time.time()
-            self.worker_map[worker_id]['busy'] = True
-            self.send(worker_id, msg.to_json())
+        # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
+        self.worker_map[worker_id]['last_sent'] = time.time()
+        self.worker_map[worker_id]['busy'] = True
+        self.send(worker_id, msg.to_json())
 
     def handle_in(self):
         self.msg_count_in += 1
@@ -281,7 +289,7 @@ class ControllerNode(object):
                 self.others[addr]['downloads'] = data.get('downloads', {})
         elif msg.isa('movebcolz'):
             msg['worker_id'] = '__needs_local__'
-            self.worker_out_messages.append(msg)
+            self.worker_out_messages[None].append(msg)
         else:
             self.logger.debug("Got a msg but don't know what to do with it %s" % msg)
 
@@ -404,14 +412,16 @@ class ControllerNode(object):
             args, kwargs = msg.get_args_kwargs()
             if args:
                 if type(args[0]) is int:
-                    self.worker_out_messages.append(msg.copy())
+                    self.worker_out_messages[None].append(msg.copy())
+                    result = None
                 else:
                     for x in args[0]:
                         mm = msg.copy()
-                        mm['affinity'] = kwargs.get('affinity')
+                        del mm['token']
+                        affinity = kwargs.get('affinity')
                         mm.set_args_kwargs([x], kwargs)
-                        self.worker_out_messages.append(mm)
-                result = None
+                        self.worker_out_messages.setdefault(affinity, []).append(mm)
+                    result = 'Multi-sleep returning immediately'
             else:
                 result = "Sleep needs an int or list of ints as arg[0]"
         elif msg['payload'] in ('groupby',):
@@ -434,13 +444,11 @@ class ControllerNode(object):
             newmsg = msg.copy()
             kwargs['filename'] = filename
             newmsg.set_args_kwargs(args, kwargs)
-            self.worker_out_messages.append(newmsg)
+            self.worker_out_messages[None].append(newmsg)
 
     def handle_calc_message(self, msg):
         args, kwargs = msg.get_args_kwargs()
         affinity = kwargs.get('affinity')
-        if affinity:
-            msg['affinity'] = affinity
 
         if len(args) != 4:
             return 'Error, No correct args given, expecting: ' + \
@@ -472,7 +480,7 @@ class ControllerNode(object):
             new_token = binascii.hexlify(os.urandom(8))
             msg['token'] = new_token
             rpc_segment['filenames'][filename] = new_token
-            self.worker_out_messages.append(msg.copy())
+            self.worker_out_messages.setdefault(affinity, []).append(msg.copy())
 
         self.rpc_segments[parent_token] = rpc_segment
 
@@ -554,6 +562,7 @@ class ControllerNode(object):
                         self.handle_in()
                     if event & zmq.POLLOUT:
                         self.handle_out()
+                self.process_sink_results()
                 self.check_downloads()
             except KeyboardInterrupt:
                 self.logger.debug('Keyboard Interrupt')

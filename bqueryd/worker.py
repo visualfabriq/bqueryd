@@ -95,6 +95,7 @@ class WorkerNode(object):
         return wrm
 
     def heartbeat(self):
+        time.sleep(0.001) # to prevent too tight loop
         since_last_wrm = time.time() - self.last_wrm
         if since_last_wrm > WRM_DELAY:
             self.check_controllers()
