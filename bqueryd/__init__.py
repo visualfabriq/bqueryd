@@ -1,4 +1,4 @@
-__version__ = 0.6
+__version__ = 0.8
 import os
 import logging
 logger = logging.getLogger('bqueryd')
@@ -10,7 +10,7 @@ logger.addHandler(ch)
 DEFAULT_DATA_DIR = '/srv/bcolz/'
 INCOMING = os.path.join(DEFAULT_DATA_DIR, 'incoming')
 if not os.path.exists(INCOMING):
-    os.mkdir(INCOMING)
+    os.makedirs(INCOMING)
 
 REDIS_SET_KEY = 'bqueryd_controllers'
 
