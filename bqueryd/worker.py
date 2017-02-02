@@ -15,6 +15,7 @@ import logging
 import random
 import bqueryd
 import socket
+import smart_open
 import pandas as pd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage, FileDownloadProgress
@@ -253,11 +254,17 @@ class WorkerNode(object):
             s3_conn = boto.connect_s3()
             s3_bucket = s3_conn.get_bucket(bucket, validate=False)
             k = s3_bucket.get_key(filename, validate=False)
+            k.open()
             fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
 
-
-            k.get_contents_to_filename(tmp_filename, cb=the_callback)
-
+            with smart_open.smart_open(k) as fin, open(tmp_filename, 'w') as fout:
+                buf = True
+                progress = 0
+                while buf:
+                    buf = fin.read(16384)
+                    fout.write(buf)
+                    progress += len(buf)
+                    the_callback(progress, k.size)
 
             # unzip the tmp file to the filename
             # if temp_path already exists, first remove it.

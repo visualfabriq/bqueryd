@@ -52,8 +52,11 @@ class DownloadProgressTicket(object):
         progress_details = file_progress.setdefault(node_address, {'started':time.time()})
         if progress < 0:
             progress_details['done'] = True
-            del progress_details['progress']
-            del progress_details['size']
+            try:
+                del progress_details['progress']
+                del progress_details['size']
+            except KeyError:
+                pass
         else:
             progress_details['progress'] = progress
             progress_details['size'] = size
