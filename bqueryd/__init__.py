@@ -1,10 +1,11 @@
 __version__ = 0.6
 import os
 import logging
-logging.basicConfig(format="%(asctime)s %(name)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.DEBUG)
 logger = logging.getLogger('bqueryd')
-b = logging.getLogger('boto')
-b.setLevel(logging.INFO)
+ch = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s %(name)s %(message)s', datefmt="%Y-%m-%d %H:%M:%S")
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
 DEFAULT_DATA_DIR = '/srv/bcolz/'
 INCOMING = os.path.join(DEFAULT_DATA_DIR, 'incoming')
