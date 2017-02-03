@@ -568,7 +568,7 @@ class ControllerNode(object):
             del self.downloads[ticket]
 
     def go(self):
-        self.logger.info('Starting')
+        self.logger.info('Starting #####################################')
 
         while self.is_running:
             try:
