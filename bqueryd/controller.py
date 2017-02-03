@@ -137,7 +137,7 @@ class ControllerNode(object):
         # Disconnect from controllers not in current set
         for x in self.others.keys()[:]: # iterate over a copy of keys so we can remove entries
             if x not in all_servers:
-                self.logger.debug('Disconnecting from %s' % x)
+                self.logger.critical('Disconnecting from %s' % x)
                 try:
                     del self.others[x]
                     self.socket.disconnect(x)
