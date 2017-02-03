@@ -164,7 +164,7 @@ class WorkerNode(object):
 
     def handle_calc(self, msg):
         args, kwargs = msg.get_args_kwargs()
-        self.logger.debug('doing calc %s' % args)
+        self.logger.info('doing calc %s' % args)
         filename = args[0]
         groupby_col_list = args[1]
         aggregation_list = args[2]
@@ -267,7 +267,7 @@ class WorkerNode(object):
                         buf = True
                         progress = 0
                         while buf:
-                            buf = fin.read(16384)
+                            buf = fin.read(pow(2,20) * 16) # Use a bigger buffer
                             fout.write(buf)
                             progress += len(buf)
                             the_callback(progress, size)
