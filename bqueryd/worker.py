@@ -288,6 +288,7 @@ class WorkerNode(object):
             if os.path.exists(tmp_filename):
                 os.remove(tmp_filename)
         msg.add_as_binary('result', temp_path)
+        self.logger.debug('Download done %s s3://%s/%s', ticket, bucket, filename)
         the_callback(-1, -1)
 
         return msg
