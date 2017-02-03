@@ -132,7 +132,7 @@ class ControllerNode(object):
                 try:
                     self.socket.send_multipart([x, msg.to_json()])
                 except zmq.error.ZMQError, e:
-                    self.logger.debug('Removing %s due to %s' % (x, e))
+                    self.logger.critical('Removing %s due to %s' % (x, e))
                     self.redis_server.srem(bqueryd.REDIS_SET_KEY, x)
         # Disconnect from controllers not in current set
         for x in self.others.keys()[:]: # iterate over a copy of keys so we can remove entries
@@ -292,7 +292,7 @@ class ControllerNode(object):
             self.logger.info("Set loglevel to %s" % loglevel)
         elif msg.isa('info'):
             # Another node registered with you and is sending some info
-            data = msg.get_from_binary('result')
+            data = msg.get_from_binary('result', default={})
             addr = data.get('address')
             node = data.get('node')
             uptime = data.get('uptime')
@@ -300,6 +300,8 @@ class ControllerNode(object):
                 self.others[addr]['node'] = node
                 self.others[addr]['uptime'] = uptime
                 self.others[addr]['downloads'] = data.get('downloads', {})
+            else:
+                self.logger.critical("bogus Info message received from %s %s", sender, msg)
         elif msg.isa('movebcolz'):
             msg['worker_id'] = '__needs_local__'
             self.worker_out_messages[None].append(msg)
