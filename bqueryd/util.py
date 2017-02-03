@@ -5,6 +5,8 @@ import os
 import tempfile
 import zipfile
 import binascii
+import time
+import sys
 
 def get_my_ip():
     eth_interfaces = sorted([ifname for ifname in netifaces.interfaces() if ifname.startswith('eth')])
@@ -50,3 +52,35 @@ def zip_to_file(file_path, destination):
         checksum = hex(binascii.crc32(zip_info) & 0xffffffff)
 
     return zip_filename, checksum
+
+###################################################################################################
+# Various Utility methods for user-friendly info display
+
+def show_workers(info_data, only_busy=False):
+    'For the given info_data dict, show a humand-friendly overview of the current workers'
+    nodes = {}
+    for w in info_data.get('workers', {}).values():
+        nodes.setdefault(w['node'], []).append(w)
+    for k, n in nodes.items():
+        print k
+        for nn in n:
+            if only_busy and not nn.get('busy'):
+                continue
+            print '   ', time.ctime(nn['last_seen']), nn.get('busy')
+
+def show_busy_downloads(info_data):
+    all_downloads = info_data['downloads'].copy()
+    for x in info_data.get('others', {}).values():
+        all_downloads.update(x.get('downloads'))
+    for ticket, x in all_downloads.items():
+        print ticket, time.ctime(x['created'])
+        for filename, nodelist in x['progress'].items():
+            print filename
+            for node, x in nodelist.items():
+                print '   ', node,
+                if not x.get('done'):
+                    if 'progress' in x:
+                        print int(float(x['progress']) / x.get('size', x['progress']) * 100), '%'
+                    else:
+                        print x
+                sys.stdout.write('\n')
