@@ -3,7 +3,7 @@ import os
 import logging
 logger = logging.getLogger('bqueryd')
 ch = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s %(name)s %(message)s', datefmt="%Y-%m-%d %H:%M:%S")
+formatter = logging.Formatter('%(levelname)s %(asctime)s %(name)s %(message)s', datefmt="%Y-%m-%d %H:%M:%S")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
