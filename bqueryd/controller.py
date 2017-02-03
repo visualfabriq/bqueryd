@@ -20,13 +20,14 @@ HEARTBEAT_INTERVAL = 15 # time in seconds between doing heartbeats
 MIN_CALCWORKER_COUNT = 0.25 # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
 
 class DownloadProgressTicket(object):
-    def __init__(self, ticket, rpc_id, filenames):
+    def __init__(self, ticket, rpc_id, filenames, bucket):
         self.ticket = ticket
         self.rpc_id = rpc_id
         self.rpc_reply = False
         self.created = time.time()
         self.files_progress = {} # for each file being downloaded, keep a dict of nodes doing them
         self.nodes = {}
+        self.bucket = bucket
         for x in filenames:
             self.files_progress[x] = {}
 
@@ -62,7 +63,8 @@ class DownloadProgressTicket(object):
             progress_details['size'] = size
 
     def to_dict(self):
-        data = {'ticket': self.ticket, 'created': self.created, 'busy': self.is_busy(), 'nodes':self.nodes.keys()}
+        data = {'ticket': self.ticket, 'created': self.created, 'bucket': self.bucket,
+                'busy': self.is_busy(), 'nodes':self.nodes.keys()}
         data['progress'] = self.files_progress
         return data
 
@@ -178,7 +180,7 @@ class ControllerNode(object):
         reserved_count = 0
         local_workers = 0
         for worker_id, worker in self.worker_map.items():
-            if worker['node'] == self.node_name:
+            if worker.get('node', '?') == self.node_name:
                 local_workers += 1
                 if worker.get('reserved_4_calc') == True:
                     reserved_count += 1
@@ -400,7 +402,7 @@ class ControllerNode(object):
                 result = "A download needs kwargs: (filenames=, bucket=)"
             else:
                 ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
-                self.downloads[ticket] = DownloadProgressTicket(ticket, sender, filenames)
+                self.downloads[ticket] = DownloadProgressTicket(ticket, sender, filenames, bucket)
 
                 del msg['token'] # delete the incoming token so we don't send replies back to caller directly
                 msg['source'] = self.address
