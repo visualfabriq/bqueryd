@@ -177,7 +177,7 @@ class WorkerNode(object):
         if not os.path.exists(rootdir):
             raise Exception('Path %s does not exist' % rootdir)
 
-        ct = bquery.ctable(rootdir=rootdir, mode='r')
+        ct = bquery.ctable(rootdir=rootdir, mode='r', auto_cache=True)
 
         # prepare filter
         if not where_terms_list:
@@ -189,7 +189,7 @@ class WorkerNode(object):
                 msg.add_as_binary('result', pd.DataFrame())
                 return msg
             # else create the boolean array
-            bool_arr = ct.where_terms(where_terms_list)
+            bool_arr = ct.where_terms(where_terms_list, cache=True)
 
         # expand filter column check
         if expand_filter_column:
@@ -204,10 +204,15 @@ class WorkerNode(object):
             # direct result from the ctable
             column_list = groupby_col_list + [x[0] for x in aggregation_list]
             if bool_arr is not None:
-                ct = bcolz.fromiter(ct[column_list].where(bool_arr), ct[column_list].dtype, sum(bool_arr))
+                result_ctable = bcolz.fromiter(ct[column_list].where(bool_arr), ct[column_list].dtype, sum(bool_arr))
             else:
-                ct = bcolz.fromiter(ct[column_list], ct[column_list].dtype, ct.len)
-            buf = ct[column_list].todataframe()
+                result_ctable = bcolz.fromiter(ct[column_list], ct[column_list].dtype, ct.len)
+            buf = result_ctable[column_list].todataframe()
+
+        # clean up temporary files and memory objects
+        ct.clean_tmp_rootdir()
+        del ct
+        del result_ctable
 
         msg.add_as_binary('result', buf)
         return msg
