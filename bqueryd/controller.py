@@ -14,10 +14,11 @@ from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorM
     BusyMessage, DoneMessage, StopMessage, FileDownloadProgress
 from bqueryd.util import get_my_ip, bind_to_random_port
 
-POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
-DEAD_WORKER_TIMEOUT = 1 * 60 # time in seconds that we wait for a worker to respond before being removed
+POLLING_TIMEOUT = 500  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
+DEAD_WORKER_TIMEOUT = 30 * 60 # time in seconds that we wait for a worker to respond before being removed
 HEARTBEAT_INTERVAL = 15 # time in seconds between doing heartbeats
 MIN_CALCWORKER_COUNT = 0.25 # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
+DOWNLOAD_MSG_INTERVAL = 60 # How often in seconds to repeat sending download messages to controller nodes for files.
 
 class DownloadProgressTicket(object):
     def __init__(self, ticket, rpc_id, filenames, bucket):
@@ -61,6 +62,17 @@ class DownloadProgressTicket(object):
         else:
             progress_details['progress'] = progress
             progress_details['size'] = size
+
+    def get_downloads_needed(self):
+        nodes = {}
+        for filename, progress in self.files_progress.items():
+            for node, entry in progress.items():
+                # Only generate messages once per delay
+                time_delta = time.time() - entry.get('last_msg_sent', 0)
+                if not entry or time_delta > DOWNLOAD_MSG_INTERVAL:
+                    nodes.setdefault(node, []).append(filename)
+                    entry['last_msg_sent'] = time.time()
+        return nodes
 
     def to_dict(self):
         data = {'ticket': self.ticket, 'created': self.created, 'bucket': self.bucket,
@@ -397,6 +409,7 @@ class ControllerNode(object):
         elif msg.isa('killall'):
             result = self.killall()
         elif msg.isa('download'):
+            result = "Trying to download..."
             args, kwargs = msg.get_args_kwargs()
             filenames = kwargs.get('filenames')
             bucket = kwargs.get('bucket')
@@ -405,16 +418,11 @@ class ControllerNode(object):
             else:
                 ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
                 self.downloads[ticket] = DownloadProgressTicket(ticket, sender, filenames, bucket)
-
-                del msg['token'] # delete the incoming token so we don't send replies back to caller directly
-                msg['source'] = self.address
-                msg['ticket'] = ticket
                 for o in self.others:
-                    mm = msg.copy()
-                    self.send(o, mm.to_json())
                     self.downloads[ticket].add_node(o)
                 self.downloads[ticket].add_node(self.address)
-                result = self.handle_download(msg)
+                result = None # The rpc result for download gets done in the self.check_downloads call...
+
         elif msg.isa('bumpdownload'):
             args, kwargs = msg.get_args_kwargs()
             if not args:
@@ -455,6 +463,7 @@ class ControllerNode(object):
         # the controller receives a message with filenames
         # for each filename requested, send a message to workers requesting the single file
         # the entire doenload gets tracked under a single ticket
+        # NOTE There is a difference between handling a download message received from RPC and one received from a peer!
         msg['worker_id'] = '__needs_local__'
         msg['dest'] = self.address
 
@@ -558,8 +567,17 @@ class ControllerNode(object):
                     self.send(controller_address, m.to_json())
                 completed_tickets.append(ticket)
 
+            # get a list of nodes to receive download messages from dlpt
+            for node_address, filenames in dlpt.get_downloads_needed().items():
+                msg = Message({'payload':'download'})
+                kwargs = {'filenames': filenames, 'bucket': dlpt.bucket}
+                msg.set_args_kwargs([], kwargs)
+                msg['source'] = self.address
+                msg['ticket'] = ticket
+                self.send(node_address, msg.to_json())
+
             if not dlpt.rpc_reply and (len(dlpt.nodes) == len(self.others) + 1):
-                self.logger.debug('OK, ALL nodes in progress downloading file')
+                self.logger.debug('OK, ALL %s nodes in progress downloading file' % len(dlpt.nodes))
                 # Return the ticket number to the calling RPC...
                 rpc_id = dlpt.rpc_id
                 dlpt.rpc_reply = True

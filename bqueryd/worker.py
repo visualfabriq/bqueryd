@@ -251,6 +251,12 @@ class WorkerNode(object):
         if os.path.exists(temp_path):
             self.logger.info("%s exists, skipping download" % temp_path)
         else:
+            # Another worker might already be busy downloading the file for this ticket,
+            # if that is so just return
+            if os.path.exists(temp_path + '.progress'):
+                self.logger.debug("%s.progress exists, another download in progress" % temp_path)
+                return
+            open(temp_path + '.progress', 'w').write(self.worker_id)
             # get file from S3
             s3_conn = boto.connect_s3()
             s3_bucket = s3_conn.get_bucket(bucket, validate=False)
