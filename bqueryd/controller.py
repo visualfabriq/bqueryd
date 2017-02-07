@@ -19,6 +19,7 @@ DEAD_WORKER_TIMEOUT = 30 * 60 # time in seconds that we wait for a worker to res
 HEARTBEAT_INTERVAL = 15 # time in seconds between doing heartbeats
 MIN_CALCWORKER_COUNT = 0.25 # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
 DOWNLOAD_MSG_INTERVAL = 60 # How often in seconds to repeat sending download messages to controller nodes for files.
+RUNFILES_LOCATION = '/srv/' # Location to write a .pid and .address file
 
 class DownloadProgressTicket(object):
     def __init__(self, ticket, rpc_id, filenames, bucket):
@@ -96,6 +97,11 @@ class ControllerNode(object):
 
         self.node_name = socket.gethostname()
         self.address = bind_to_random_port(self.socket, 'tcp://'+get_my_ip(), min_port=14300, max_port=14399, max_tries=100)
+        with open(os.path.join(RUNFILES_LOCATION, 'bqueryd_controller.address'), 'w') as F:
+            F.write(self.address)
+        with open(os.path.join(RUNFILES_LOCATION, 'bqueryd_controller.pid'), 'w') as F:
+            F.write(str(os.getpid()))
+
         self.logger = bqueryd.logger.getChild('controller').getChild(self.address)
         self.logger.setLevel(loglevel)
 
@@ -609,6 +615,10 @@ class ControllerNode(object):
                 self.logger.error("Exception %s" % traceback.format_exc())
 
         self.logger.info('Stopping')
+        for x in (os.path.join(RUNFILES_LOCATION, 'bqueryd_controller.pid'),
+                  os.path.join(RUNFILES_LOCATION, 'bqueryd_controller.address')):
+            if os.path.exists(x):
+                os.remove(x)
 
 def create_result_from_response(params, result_list):
     if not result_list:
