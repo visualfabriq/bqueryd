@@ -255,6 +255,7 @@ class WorkerNode(object):
         temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
         if os.path.exists(temp_path):
             self.logger.info("%s exists, skipping download" % temp_path)
+            the_callback(-1, -1)
         else:
             # Another worker might already be busy downloading the file for this ticket,
             # if that is so just return
