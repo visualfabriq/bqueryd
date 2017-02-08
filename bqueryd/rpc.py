@@ -7,6 +7,7 @@ import random
 import bqueryd
 import boto
 import smart_open
+import binascii
 from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
 import traceback
 
@@ -16,11 +17,42 @@ class RPCError(Exception):
 
 
 class RPC(object):
-    def __init__(self, address=None, timeout=120, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO):
+    def connect_socket(self):
+        reply = None
+        for c in self.controllers:
+            self.logger.debug('Establishing socket connection to %s' % c)
+            tmp_sock = self.context.socket(zmq.REQ)
+            tmp_sock.setsockopt(zmq.RCVTIMEO, 2000)
+            tmp_sock.setsockopt(zmq.LINGER, 0)
+            tmp_sock.identity = self.identity
+            tmp_sock.connect(c)
+            # first ping the controller to see if it responds at all
+            msg = RPCMessage({'payload': 'ping'})
+            tmp_sock.send_json(msg)
+            try:
+                reply = msg_factory(tmp_sock.recv_json())
+                self.address = c
+                break
+            except:
+                traceback.print_exc()
+                continue
+        if reply:
+            # Now set the timeout to the actual requested
+            self.logger.debug("Connection OK, setting network timeout to %s milliseconds", self.timeout*1000)
+            self.controller = tmp_sock
+            self.controller.setsockopt(zmq.RCVTIMEO, self.timeout*1000)
+        else:
+            raise Exception('No controller connection')
+
+
+    def __init__(self, address=None, timeout=120, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO, retries=3):
         self.logger = bqueryd.logger.getChild('rpc')
         self.logger.setLevel(loglevel)
         self.context = zmq.Context()
         redis_server = redis.from_url(redis_url)
+        self.retries = retries
+        self.timeout = timeout
+        self.identity = binascii.hexlify(os.urandom(8))
 
         if not address:
             # Bind to a random controller
@@ -30,35 +62,12 @@ class RPC(object):
             random.shuffle(controllers)
         else:
             controllers = [address]
-
-        reply = None
-        for c in controllers:
-            self.logger.debug('Trying RPC to %s' % c)
-            tmp_sock = self.context.socket(zmq.REQ)
-            tmp_sock.setsockopt(zmq.RCVTIMEO, 2000)
-            tmp_sock.setsockopt(zmq.LINGER, 0)
-            tmp_sock.connect(c)
-            # first ping the controller to see if it respnds at all
-            msg = RPCMessage({'payload': 'ping'})
-            tmp_sock.send_json(msg)
-            try:
-                reply = msg_factory(tmp_sock.recv_json())
-                self.address = c
-                break
-            except:
-                traceback.print_exc()
-                self.logger.debug('Error on %s, removing it from redis set %s' %(c, bqueryd.REDIS_SET_KEY))
-                redis_server.srem(bqueryd.REDIS_SET_KEY, c)
-                continue
-        if reply:
-            # Now set the timeout to the actual requested
-            self.controller = tmp_sock
-            self.controller.setsockopt(zmq.RCVTIMEO, timeout*1000)
-        else:
-            raise Exception('No controller connection')
+        self.controllers = controllers
+        self.connect_socket()
 
 
     def __getattr__(self, name):
+
         def _rpc(*args, **kwargs):
             self.logger.debug('Call %s on %s' % (name, self.address))
             start_time = time.time()
@@ -71,8 +80,23 @@ class RPC(object):
             # bquery ctable does not like col names to be unicode for example
             msg = RPCMessage({'payload': name})
             msg.add_as_binary('params', params)
-            self.controller.send_json(msg)
-            rep = msg_factory(self.controller.recv_json())
+            rep = None
+            for x in range(self.retries):
+                try:
+                    self.controller.send_json(msg)
+                    rep = msg_factory(self.controller.recv_json())
+                    break
+                except Exception, e:
+                    self.controller.close()
+                    self.logger.critical(e)
+                    if x == self.retries:
+                        raise e
+                    else:
+                        self.logger.debug("Error, retrying %s" % (x+1))
+                        self.connect_socket()
+                        pass
+            if not rep:
+                raise RPCError("No response from DQE, retries %s exceeded" % self.retries)
             if isinstance(rep, ErrorMessage):
                 raise RPCError(rep.get('payload'))
             result = rep.get_from_binary('result')
