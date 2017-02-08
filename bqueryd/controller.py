@@ -16,7 +16,7 @@ from bqueryd.util import get_my_ip, bind_to_random_port
 
 POLLING_TIMEOUT = 500  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
 DEAD_WORKER_TIMEOUT = 30 * 60 # time in seconds that we wait for a worker to respond before being removed
-HEARTBEAT_INTERVAL = 15 # time in seconds between doing heartbeats
+HEARTBEAT_INTERVAL = 5 # time in seconds between doing heartbeats
 MIN_CALCWORKER_COUNT = 0.25 # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
 DOWNLOAD_MSG_INTERVAL = 60 # How often in seconds to repeat sending download messages to controller nodes for files.
 RUNFILES_LOCATION = '/srv/' # Location to write a .pid and .address file
@@ -68,6 +68,8 @@ class DownloadProgressTicket(object):
         nodes = {}
         for filename, progress in self.files_progress.items():
             for node, entry in progress.items():
+                if entry.get('progress') < 0: # Downloads that are done
+                    continue
                 # Only generate messages once per delay
                 time_delta = time.time() - entry.get('last_msg_sent', 0)
                 if not entry or time_delta > DOWNLOAD_MSG_INTERVAL:
@@ -130,7 +132,7 @@ class ControllerNode(object):
                 tmp = [addr, msg_buf]
             self.socket.send_multipart(tmp)
         except zmq.ZMQError, ze:
-            self.logger.debug("Problem with %s: %s" % (addr, ze))
+            self.logger.critical("Problem with %s: %s" % (addr, ze))
 
     def connect_to_others(self):
         # Make sure own address is still registered
@@ -152,6 +154,7 @@ class ControllerNode(object):
                 except zmq.error.ZMQError, e:
                     self.logger.critical('Removing %s due to %s' % (x, e))
                     self.redis_server.srem(bqueryd.REDIS_SET_KEY, x)
+                    del self.others[x]
         # Disconnect from controllers not in current set
         for x in self.others.keys()[:]: # iterate over a copy of keys so we can remove entries
             if x not in all_servers:
