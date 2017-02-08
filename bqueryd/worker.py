@@ -25,6 +25,7 @@ DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
 WRM_DELAY = 20 # how often in seconds to send a WorkerRegisterMessage
+MAX_MESSAGES = 1000
 bcolz.set_nthreads(1)
 
 
@@ -50,6 +51,7 @@ class WorkerNode(object):
         self.start_time = time.time()
         self.logger = bqueryd.logger.getChild('worker '+self.worker_id)
         self.logger.setLevel(loglevel)
+        self.msg_count = 0
 
     def send(self, addr, msg):
         try:
@@ -95,6 +97,7 @@ class WorkerNode(object):
         wrm['data_dir'] = self.data_dir
         wrm['controllers'] = self.controllers.values()
         wrm['uptime'] = int(time.time() - self.start_time)
+        wrm['msg_count'] = self.msg_count
         return wrm
 
     def heartbeat(self):
@@ -119,6 +122,11 @@ class WorkerNode(object):
         if len(tmp) != 2:
             self.logger.critical('Received a msg with len != 2, something seriously wrong. ')
             return
+
+        self.msg_count += 1
+        if self.msg_count > MAX_MESSAGES:
+            self.logger.critical('MAX_MESSAGES of %s reached, restarting' % MAX_MESSAGES)
+            self.running = False
 
         sender, msg_buf = tmp
         msg = msg_factory(msg_buf)
@@ -156,6 +164,12 @@ class WorkerNode(object):
             for sock, event in self.poller.poll(timeout=POLLING_TIMEOUT):
                 if event & zmq.POLLIN:
                     self.handle_in()
+
+        # Also send a message to all your controllers, that you are stopping
+        self.send_to_all(StopMessage())
+        for k in self.controllers:
+            self.socket.disconnect(k)
+
         self.logger.info('Stopping')
 
     def send_to_all(self, msg):
@@ -329,10 +343,6 @@ class WorkerNode(object):
     def handle(self, msg):
         if msg.isa('kill'):
             self.running = False
-            # Also send a message to all your controllers, that you are stopping
-            self.send_to_all(StopMessage())
-            for k in self.controllers:
-                self.socket.disconnect(k)
             return
         elif msg.isa('info'):
             msg = self.prepare_wrm()
