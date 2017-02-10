@@ -13,6 +13,9 @@ if not os.path.exists(INCOMING):
     os.makedirs(INCOMING)
 
 REDIS_SET_KEY = 'bqueryd_controllers'
+REDIS_DOWNLOAD_FILES_KEY = 'bqueryd_downloads'
+# TODO dynamic nature of DQEng failing now due to out-of-memory errors. hard-code this and revisit soon to make it more dynamic again
+NODES = ['dqe11', 'dqe12', 'dqe13', 'dqe14', 'dqe15']
 
 from rpc import RPC, RPCError
 from controller import ControllerNode

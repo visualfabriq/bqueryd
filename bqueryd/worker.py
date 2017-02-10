@@ -19,7 +19,7 @@ import smart_open
 from ssl import SSLError
 import pandas as pd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
-    DoneMessage, FileDownloadProgress
+    DoneMessage
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
@@ -231,31 +231,24 @@ class WorkerNode(object):
         msg.add_as_binary('result', buf)
         return msg
 
-    def file_downloader_callback(self, msg):
-        def _fn(progress, size):
-            args, kwargs = msg.get_args_kwargs()
-            filename = kwargs.get('filename')
-            ticket = msg.get('ticket')
-            addr = str(msg.get('source'))
-            if progress == 0:
-                self.logger.debug('At %s of %s for %s %s :: %s' % (progress, size, ticket, addr, filename))
-            tmp = FileDownloadProgress(msg)
-            tmp['filename'] = filename
-            tmp['progress'] = progress
-            tmp['size'] = size
-            self.send(addr, tmp)
-        return _fn
+    def file_downloader_progress(self, ticket, filename, progress):
+        # A progress slot contains a timestamp_filesize
+        progress_slot = '%s_%s' % (time.time(), progress)
+        node_filename_slot = '%s_%s' % (self.node_name, filename)
+        self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
 
     def handle_download(self, msg):
-        args, kwargs = msg.get_args_kwargs()
-        filename = kwargs.get('filename')
-        bucket = kwargs.get('bucket')
-
-        if not (filename and bucket):
-            raise Exception('[filename, bucket] args are all required')
-
-        # Used to send progress messages to caller
-        the_callback = self.file_downloader_callback(msg)
+        self.logger.debug('Doing download %s', msg)
+        fileurl = msg.get('fileurl', '')
+        if not fileurl.startswith('s3://'):
+            self.logger.critical("Bogus fileurl for download [%s]", fileurl)
+            return
+        tmp = fileurl[5:].split('/')
+        if len(tmp) < 2:
+            self.logger.critical("Bogus fileurl %s, should be s3://<bucket-name>/filename", fileurl)
+            return
+        bucket = tmp[0]
+        filename = '/'.join(tmp[1:])
 
         ticket = msg['ticket']
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
@@ -269,14 +262,8 @@ class WorkerNode(object):
         temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
         if os.path.exists(temp_path):
             self.logger.info("%s exists, skipping download" % temp_path)
-            the_callback(-1, -1)
+            self.file_downloader_progress(ticket, fileurl, 'DONE')
         else:
-            # Another worker might already be busy downloading the file for this ticket,
-            # if that is so just return
-            if os.path.exists(temp_path + '.progress'):
-                self.logger.debug("%s.progress exists, another download in progress" % temp_path)
-                return
-            open(temp_path + '.progress', 'w').write(self.worker_id)
             # get file from S3
             s3_conn = boto.connect_s3()
             s3_bucket = s3_conn.get_bucket(bucket, validate=False)
@@ -296,7 +283,7 @@ class WorkerNode(object):
                             buf = fin.read(pow(2,20) * 16) # Use a bigger buffer
                             fout.write(buf)
                             progress += len(buf)
-                            the_callback(progress, size)
+                            self.file_downloader_progress(ticket, fileurl, size)
                     break
                 except SSLError, e:
                     if x == 2:
@@ -315,7 +302,7 @@ class WorkerNode(object):
                 os.remove(tmp_filename)
         msg.add_as_binary('result', temp_path)
         self.logger.debug('Download done %s s3://%s/%s', ticket, bucket, filename)
-        the_callback(-1, -1)
+        self.file_downloader_progress(ticket, fileurl, 'DONE')
 
         return msg
 
@@ -335,9 +322,14 @@ class WorkerNode(object):
             self.logger.debug("moving %s %s" % (ready_path, prod_path))
             os.rename(ready_path, prod_path)
 
+        # Remove all Redis entries for this node and ticket
+        # it can't be done per file as we don't have the bucket name from which a file was downloaded
+        for node_filename_slot in self.redis_server.hgetall('ticket_' + ticket):
+            if node_filename_slot.startswith(self.node_name):
+                self.logger.debug('Removing ticket_%s %s', ticket, node_filename_slot)
+                self.redis_server.hdel('ticket_'+ticket, node_filename_slot)
+
         shutil.rmtree(ticket_path, ignore_errors=True)
-        # TODO add some error handling when something goes wrong in this movemessage, send the exception to the
-        # calling controller and hang it on the download ticket
 
 
     def handle(self, msg):

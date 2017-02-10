@@ -11,7 +11,7 @@ import pandas as pd
 import redis
 import bqueryd
 from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, \
-    BusyMessage, DoneMessage, StopMessage, FileDownloadProgress
+    BusyMessage, DoneMessage, StopMessage
 from bqueryd.util import get_my_ip, bind_to_random_port
 
 POLLING_TIMEOUT = 500  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
@@ -20,68 +20,6 @@ HEARTBEAT_INTERVAL = 5 # time in seconds between doing heartbeats
 MIN_CALCWORKER_COUNT = 0.25 # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
 DOWNLOAD_MSG_INTERVAL = 60 # How often in seconds to repeat sending download messages to controller nodes for files.
 RUNFILES_LOCATION = '/srv/' # Location to write a .pid and .address file
-
-class DownloadProgressTicket(object):
-    def __init__(self, ticket, rpc_id, filenames, bucket):
-        self.ticket = ticket
-        self.rpc_id = rpc_id
-        self.rpc_reply = False
-        self.created = time.time()
-        self.files_progress = {} # for each file being downloaded, keep a dict of nodes doing them
-        self.nodes = {}
-        self.bucket = bucket
-        for x in filenames:
-            self.files_progress[x] = {}
-
-    def is_busy(self):
-        if not self.files_progress:
-            return True
-        for np in self.files_progress.values():
-            if not np:
-                return True
-            for npv in np.values():
-                if not npv.get('done'):
-                    return True
-        return False
-
-    def add_node(self, node_address):
-        self.nodes[node_address] = None
-        for f_progress in self.files_progress.values():
-            f_progress.setdefault(node_address, {})
-
-    def update_progress(self, node_address, filename, progress, size):
-        self.nodes[node_address] = time.time()
-        file_progress = self.files_progress[filename]
-        progress_details = file_progress.setdefault(node_address, {'started':time.time()})
-        if progress < 0:
-            progress_details['done'] = True
-            try:
-                del progress_details['progress']
-                del progress_details['size']
-            except KeyError:
-                pass
-        else:
-            progress_details['progress'] = progress
-            progress_details['size'] = size
-
-    def get_downloads_needed(self):
-        nodes = {}
-        for filename, progress in self.files_progress.items():
-            for node, entry in progress.items():
-                if entry.get('progress') < 0: # Downloads that are done
-                    continue
-                # Only generate messages once per delay
-                time_delta = time.time() - entry.get('last_msg_sent', 0)
-                if not entry or time_delta > DOWNLOAD_MSG_INTERVAL:
-                    nodes.setdefault(node, []).append(filename)
-                    entry['last_msg_sent'] = time.time()
-        return nodes
-
-    def to_dict(self):
-        data = {'ticket': self.ticket, 'created': self.created, 'bucket': self.bucket,
-                'busy': self.is_busy(), 'nodes':self.nodes.keys()}
-        data['progress'] = self.files_progress
-        return data
 
 class ControllerNode(object):
 
@@ -116,8 +54,6 @@ class ControllerNode(object):
         self.worker_out_messages_sequence = [None] # used to round-robin the outgoing messages
         self.is_running = True
         self.last_heartbeat = 0
-        # Keep a list of files presently being downloaded
-        self.downloads = {}
         self.others = {} # A dict of other Controllers running on other DQE nodes
         self.start_time = time.time()
 
@@ -168,6 +104,7 @@ class ControllerNode(object):
     def heartbeat(self):
         if time.time() - self.last_heartbeat > HEARTBEAT_INTERVAL:
             self.connect_to_others()
+            self.check_downloads()
             self.last_heartbeat = time.time()
 
     def find_free_worker(self, needs_local=False):
@@ -304,9 +241,7 @@ class ControllerNode(object):
                 self.handle_worker(sender, msg)
 
     def handle_peer(self, sender, msg):
-        if msg.isa('download'):
-            self.handle_download(msg)
-        elif msg.isa('loglevel'):
+        if msg.isa('loglevel'):
             args, kwargs = msg.get_args_kwargs()
             loglevel = {'info': logging.INFO, 'debug': logging.DEBUG}.get(args[0], logging.INFO)
             self.logger.setLevel(loglevel)
@@ -320,7 +255,6 @@ class ControllerNode(object):
             if addr and node:
                 self.others[addr]['node'] = node
                 self.others[addr]['uptime'] = uptime
-                self.others[addr]['downloads'] = data.get('downloads', {})
             else:
                 self.logger.critical("bogus Info message received from %s %s", sender, msg)
         elif msg.isa('movebcolz'):
@@ -368,20 +302,6 @@ class ControllerNode(object):
             self.remove_worker(worker_id)
             return
 
-        if msg.isa(FileDownloadProgress):
-            ticket = msg['ticket']
-            dest = msg['dest']
-            filename = msg['filename']
-            progress = msg['progress']
-            size = msg['size']
-
-            dlpt = self.downloads.get(ticket)
-            if not dlpt:
-                self.logger.debug("FileDownloadProgress received for ticket %s which is not in downloads" % ticket)
-                return
-            dlpt.update_progress(dest, filename, progress, size)
-            return
-
         if 'token' in msg:
             # A message might have been passed on to a worker for processing and needs to be returned to the relevant caller
             # so it goes in the rpc_results list
@@ -418,32 +338,7 @@ class ControllerNode(object):
         elif msg.isa('killall'):
             result = self.killall()
         elif msg.isa('download'):
-            result = "Trying to download..."
-            args, kwargs = msg.get_args_kwargs()
-            filenames = kwargs.get('filenames')
-            bucket = kwargs.get('bucket')
-            if not (filenames and bucket):
-                result = "A download needs kwargs: (filenames=, bucket=)"
-            else:
-                ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
-                self.downloads[ticket] = DownloadProgressTicket(ticket, sender, filenames, bucket)
-                for o in self.others:
-                    self.downloads[ticket].add_node(o)
-                self.downloads[ticket].add_node(self.address)
-                result = None # The rpc result for download gets done in the self.check_downloads call...
-
-        elif msg.isa('bumpdownload'):
-            args, kwargs = msg.get_args_kwargs()
-            if not args:
-                result = "Need a ticket number as first arg"
-            else:
-                ticket = args[0]
-                if ticket in self.downloads:
-                    del self.downloads[ticket]
-                    result = "OK, ticket %s bumped" % ticket
-                else:
-                    result = "Ticket %s not found on this controller" % ticket
-                    # TODO Also bump tickets on other controllers
+            result = self.setup_download(msg)
 
         elif msg['payload'] in ('sleep',):
             args, kwargs = msg.get_args_kwargs()
@@ -468,21 +363,38 @@ class ControllerNode(object):
             msg.add_as_binary('result', result)
             self.rpc_results.append(msg)
 
-    def handle_download(self, msg):
-        # the controller receives a message with filenames
-        # for each filename requested, send a message to workers requesting the single file
-        # the entire doenload gets tracked under a single ticket
-        # NOTE There is a difference between handling a download message received from RPC and one received from a peer!
-        msg['worker_id'] = '__needs_local__'
-        msg['dest'] = self.address
-
+    def setup_download(self, msg):
         args, kwargs = msg.get_args_kwargs()
         filenames = kwargs.get('filenames')
+        bucket = kwargs.get('bucket')
+        if not (filenames and bucket):
+            return "A download needs kwargs: (filenames=, bucket=)"
+
+        # Turn filenames into s3 URLs
+        filenames = ['s3://%s/%s' % (bucket, filename)  for filename in filenames]
+
+        # Check each filename for a ticket and see if is currently being downloaded...
+        download_tickets = self.redis_server.hgetall(bqueryd.REDIS_DOWNLOAD_FILES_KEY)
+        filenames = [x for x in filenames if x not in download_tickets]
+        if not filenames:
+            return "All files are currently being downloaded"
+
+        ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
         for filename in filenames:
-            newmsg = msg.copy()
-            kwargs['filename'] = filename
-            newmsg.set_args_kwargs(args, kwargs)
-            self.worker_out_messages[None].append(newmsg)
+            self.redis_server.hset(bqueryd.REDIS_DOWNLOAD_FILES_KEY, filename, ticket)
+
+            # get all node names from others + self
+            # TODO if the download happens to start when you are disconnected from others this is an issue...
+            nodes = [x.get('node') for x in self.others.values()]
+            nodes.append(self.node_name)
+
+            for node in nodes:
+                # A progress slot contains a timestamp_filesize
+                progress_slot = '%s_%s' % (0, 0) # start the progress with a timestamp of loooon ago
+                node_filename_slot = '%s_%s' % (node, filename)
+                self.redis_server.hset('ticket_'+ticket, node_filename_slot, progress_slot)
+        self.check_downloads()
+        return ticket
 
     def handle_calc_message(self, msg):
         args, kwargs = msg.get_args_kwargs()
@@ -546,7 +458,7 @@ class ControllerNode(object):
         data = {'msg_count_in': self.msg_count_in, 'node': self.node_name,
                 'workers': self.worker_map, 'worker_out_messages': [(k,len(v)) for k,v in self.worker_out_messages.items()],
                 'last_heartbeat': self.last_heartbeat, 'address': self.address,
-                'others': self.others, 'downloads': dict((x.ticket, x.to_dict()) for x in self.downloads.values()),
+                'others': self.others,
                 'uptime': int(time.time() - self.start_time), 'start_time': self.start_time
                 }
         return data
@@ -566,35 +478,66 @@ class ControllerNode(object):
                 self.remove_worker(worker_id)
 
     def check_downloads(self):
-        completed_tickets = []
-        for ticket, dlpt in self.downloads.items():
-            if not dlpt.is_busy():
-                self.logger.debug('Download done %s' % dlpt.to_dict())
-                # Send msg to all to move the signature from READY to production and rename
-                m = Message({'payload':'movebcolz', 'ticket':ticket})
-                for controller_address in dlpt.nodes:
-                    self.send(controller_address, m.to_json())
-                completed_tickets.append(ticket)
+        # Note, the files being downloaded are stored per key on filename,
+        # Yet files are grouped as being inside a ticket for downloading at the same time
+        # this done so that a group of files can be synchrionized in downloading
+        # when called from rpc.download(filenames=[...]
 
-            # get a list of nodes to receive download messages from dlpt
-            for node_address, filenames in dlpt.get_downloads_needed().items():
-                msg = Message({'payload':'download'})
-                kwargs = {'filenames': filenames, 'bucket': dlpt.bucket}
-                msg.set_args_kwargs([], kwargs)
-                msg['source'] = self.address
-                msg['ticket'] = ticket
-                self.send(node_address, msg.to_json())
+        download_tickets = self.redis_server.hgetall(bqueryd.REDIS_DOWNLOAD_FILES_KEY)
+        movebcolz_list = set()
+        for filename, ticket in download_tickets.items():
+            ticket_details = self.redis_server.hgetall('ticket_'+ticket)
+            # If this ticket is empty, all the movebcolz for every node has been done, and the
+            # filename can be released
+            if not ticket_details:
+                self.redis_server.hdel(bqueryd.REDIS_DOWNLOAD_FILES_KEY, filename)
+                continue
 
-            if not dlpt.rpc_reply and (len(dlpt.nodes) == len(self.others) + 1):
-                self.logger.debug('OK, ALL %s nodes in progress downloading file' % len(dlpt.nodes))
-                # Return the ticket number to the calling RPC...
-                rpc_id = dlpt.rpc_id
-                dlpt.rpc_reply = True
-                rpc_result = Message({'token':binascii.hexlify(rpc_id)})
-                rpc_result.add_as_binary('result', {'ticket': ticket, 'controller_address': self.address})
-                self.rpc_results.append(rpc_result)
-        for ticket in completed_tickets:
-            del self.downloads[ticket]
+            in_progress_count = 0
+            for node_filename_slot, progress_slot in ticket_details.items():
+                tmp = node_filename_slot.split('_')
+                if len(tmp) < 2:
+                    self.logger.critical("Bogus node_filename_slot %s", node_filename_slot)
+                    continue
+                node = tmp[0]
+                filename = '_'.join(tmp[1:])
+                if node != self.node_name:
+                    continue
+
+
+                tmp = progress_slot.split('_')
+                if len(tmp) != 2:
+                    self.logger.critical("Bogus progress_slot %s", progress_slot)
+                    continue
+                timestamp, progress = float(tmp[0]), tmp[1]
+
+                # If every progress slot for this ticket is DONE, we can consider the whole ticket done
+                if progress == 'DONE':
+                    continue
+
+                in_progress_count += 1
+
+
+
+                if (time.time() - timestamp) > DOWNLOAD_MSG_INTERVAL:
+                    # Send a download message for this file to a local worker
+                    msg = Message({'payload': 'download',
+                                   'worker_id': '__needs_local__',
+                                   'fileurl': filename,
+                                   'ticket': ticket})
+                    self.worker_out_messages[None].append(msg)
+                    progress_slot = '%s_%s' % (time.time(), -1)
+                    self.redis_server.hset('ticket_'+ticket, node_filename_slot, progress_slot)
+
+            if in_progress_count == 0: # every progress for this slot is set to DONE
+                movebcolz_list.add(ticket)
+
+        for ticket in movebcolz_list:
+            self.logger.debug('Download done %s, sending movebcolz message' % ticket)
+            m = Message({'payload': 'movebcolz', 'ticket': ticket})
+            all_addresses = self.others.keys() + [self.address]
+            for controller_address in all_addresses:
+                self.send(controller_address, m.to_json())
 
     def go(self):
         self.logger.info('Starting #####################################')
@@ -610,7 +553,6 @@ class ControllerNode(object):
                     if event & zmq.POLLOUT:
                         self.handle_out()
                 self.process_sink_results()
-                self.check_downloads()
             except KeyboardInterrupt:
                 self.logger.debug('Keyboard Interrupt')
                 self.kill()
@@ -642,3 +584,4 @@ def create_result_from_response(params, result_list):
                 new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols].sum()
 
     return new_result
+
