@@ -513,8 +513,6 @@ class ControllerNode(object):
                     continue
                 node = tmp[0]
                 filename = '_'.join(tmp[1:])
-                if node != self.node_name:
-                    continue
 
                 tmp = progress_slot.split('_')
                 if len(tmp) != 2:
@@ -524,6 +522,9 @@ class ControllerNode(object):
 
                 # If every progress slot for this ticket is DONE, we can consider the whole ticket done
                 if progress == 'DONE':
+                    continue
+
+                if node != self.node_name:
                     continue
 
                 in_progress_count += 1
