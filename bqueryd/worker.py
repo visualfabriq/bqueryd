@@ -1,4 +1,5 @@
 import os
+import gc
 import errno
 import time
 import zmq
@@ -24,13 +25,12 @@ from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, B
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
-WRM_DELAY = 20 # how often in seconds to send a WorkerRegisterMessage
+WRM_DELAY = 20  # how often in seconds to send a WorkerRegisterMessage
 MAX_MESSAGES = 1000
 bcolz.set_nthreads(1)
 
 
 class WorkerNode(object):
-
     def __init__(self, data_dir=bqueryd.DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
             raise Exception("Datadir %s is not a valid difrectory" % data_dir)
@@ -43,13 +43,13 @@ class WorkerNode(object):
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.identity = self.worker_id
         self.poller = zmq.Poller()
-        self.poller.register(self.socket, zmq.POLLIN|zmq.POLLOUT)
+        self.poller.register(self.socket, zmq.POLLIN | zmq.POLLOUT)
         self.redis_server = redis.from_url(redis_url)
-        self.controllers = {} # Keep a dict of timestamps when you last spoke to controllers
+        self.controllers = {}  # Keep a dict of timestamps when you last spoke to controllers
         self.check_controllers()
         self.last_wrm = 0
         self.start_time = time.time()
-        self.logger = bqueryd.logger.getChild('worker '+self.worker_id)
+        self.logger = bqueryd.logger.getChild('worker ' + self.worker_id)
         self.logger.setLevel(loglevel)
         self.msg_count = 0
 
@@ -101,7 +101,7 @@ class WorkerNode(object):
         return wrm
 
     def heartbeat(self):
-        time.sleep(0.001) # to prevent too tight loop
+        time.sleep(0.001)  # to prevent too tight loop
         since_last_wrm = time.time() - self.last_wrm
         if since_last_wrm > WRM_DELAY:
             self.check_controllers()
@@ -223,12 +223,27 @@ class WorkerNode(object):
                 result_ctable = bcolz.fromiter(ct[column_list], ct[column_list].dtype, ct.len)
             buf = result_ctable[column_list].todataframe()
 
-        # clean up temporary files and memory objects
+        msg.add_as_binary('result', buf)
+
+        # *** clean up temporary files and memory objects
+        # filter
+        del bool_arr
+
+        # input
+        ct.free_cachemem()
         ct.clean_tmp_rootdir()
         del ct
+
+        # output
+        result_ctable.free_cachemem()
+        result_ctable.clean_tmp_rootdir()
         del result_ctable
 
-        msg.add_as_binary('result', buf)
+        # buffer
+        del buf
+
+        gc.collect()
+
         return msg
 
     def file_downloader_progress(self, ticket, filename, progress):
@@ -258,7 +273,7 @@ class WorkerNode(object):
                 os.mkdir(ticket_path)
             except OSError, ose:
                 if ose == errno.EEXIST:
-                    pass # different workers might try to create the same directory at _just_ the same time causing the previous check to fail
+                    pass  # different workers might try to create the same directory at _just_ the same time causing the previous check to fail
         temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
         if os.path.exists(temp_path):
             self.logger.info("%s exists, skipping download" % temp_path)
@@ -280,7 +295,7 @@ class WorkerNode(object):
                         buf = True
                         progress = 0
                         while buf:
-                            buf = fin.read(pow(2,20) * 16) # Use a bigger buffer
+                            buf = fin.read(pow(2, 20) * 16)  # Use a bigger buffer
                             fout.write(buf)
                             progress += len(buf)
                             self.file_downloader_progress(ticket, fileurl, size)
@@ -327,10 +342,9 @@ class WorkerNode(object):
         for node_filename_slot in self.redis_server.hgetall('ticket_' + ticket):
             if node_filename_slot.startswith(self.node_name):
                 self.logger.debug('Removing ticket_%s %s', ticket, node_filename_slot)
-                self.redis_server.hdel('ticket_'+ticket, node_filename_slot)
+                self.redis_server.hdel('ticket_' + ticket, node_filename_slot)
 
         shutil.rmtree(ticket_path, ignore_errors=True)
-
 
     def handle(self, msg):
         if msg.isa('kill'):
@@ -348,7 +362,7 @@ class WorkerNode(object):
         elif msg.isa('sleep'):
             args, kwargs = msg.get_args_kwargs()
             time.sleep(float(args[0]))
-            snore = 'z'*random.randint(1,20)
+            snore = 'z' * random.randint(1, 20)
             self.logger.debug(snore)
             msg.add_as_binary('result', snore)
         elif msg.isa('download'):

@@ -5,6 +5,7 @@ import binascii
 import traceback
 import random
 import os
+import gc
 import shutil
 import socket
 import pandas as pd
@@ -15,14 +16,14 @@ from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorM
 from bqueryd.util import get_my_ip, bind_to_random_port
 
 POLLING_TIMEOUT = 500  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
-DEAD_WORKER_TIMEOUT = 30 * 60 # time in seconds that we wait for a worker to respond before being removed
-HEARTBEAT_INTERVAL = 5 # time in seconds between doing heartbeats
-MIN_CALCWORKER_COUNT = 0.25 # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
-DOWNLOAD_MSG_INTERVAL = 60 # How often in seconds to repeat sending download messages to controller nodes for files.
-RUNFILES_LOCATION = '/srv/' # Location to write a .pid and .address file
+DEAD_WORKER_TIMEOUT = 30 * 60  # time in seconds that we wait for a worker to respond before being removed
+HEARTBEAT_INTERVAL = 5  # time in seconds between doing heartbeats
+MIN_CALCWORKER_COUNT = 0.25  # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
+DOWNLOAD_MSG_INTERVAL = 60  # How often in seconds to repeat sending download messages to controller nodes for files.
+RUNFILES_LOCATION = '/srv/'  # Location to write a .pid and .address file
+
 
 class ControllerNode(object):
-
     def __init__(self, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO):
 
         self.redis_url = redis_url
@@ -30,13 +31,14 @@ class ControllerNode(object):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.ROUTER)
         self.socket.setsockopt(zmq.LINGER, 0)
-        self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1) # Paranoid for debugging purposes
-        self.socket.setsockopt(zmq.SNDTIMEO, 1000) # Short timeout
+        self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)  # Paranoid for debugging purposes
+        self.socket.setsockopt(zmq.SNDTIMEO, 1000)  # Short timeout
         self.poller = zmq.Poller()
         self.poller.register(self.socket, zmq.POLLIN | zmq.POLLOUT)
 
         self.node_name = socket.gethostname()
-        self.address = bind_to_random_port(self.socket, 'tcp://'+get_my_ip(), min_port=14300, max_port=14399, max_tries=100)
+        self.address = bind_to_random_port(self.socket, 'tcp://' + get_my_ip(), min_port=14300, max_port=14399,
+                                           max_tries=100)
         with open(os.path.join(RUNFILES_LOCATION, 'bqueryd_controller.address'), 'w') as F:
             F.write(self.address)
         with open(os.path.join(RUNFILES_LOCATION, 'bqueryd_controller.pid'), 'w') as F:
@@ -50,11 +52,11 @@ class ControllerNode(object):
         self.rpc_segments = {}  # Certain RPC calls get split and divided over workers, this dict tracks the original RPCs
         self.worker_map = {}  # maintain a list of connected workers TODO get rid of unresponsive ones...
         self.files_map = {}  # shows on which workers a file is available on
-        self.worker_out_messages = {None:[]} # A dict of buffers, used to round-robin based on message affinity
-        self.worker_out_messages_sequence = [None] # used to round-robin the outgoing messages
+        self.worker_out_messages = {None: []}  # A dict of buffers, used to round-robin based on message affinity
+        self.worker_out_messages_sequence = [None]  # used to round-robin the outgoing messages
         self.is_running = True
         self.last_heartbeat = 0
-        self.others = {} # A dict of other Controllers running on other DQE nodes
+        self.others = {}  # A dict of other Controllers running on other DQE nodes
         self.start_time = time.time()
 
     def send(self, addr, msg_buf, is_rpc=False):
@@ -83,7 +85,7 @@ class ControllerNode(object):
                 self.socket.connect(x)
                 self.others[x] = {'connect_time': time.time()}
             else:
-                msg = Message({'payload':'info'})
+                msg = Message({'payload': 'info'})
                 msg.add_as_binary('result', self.get_info())
                 try:
                     self.socket.send_multipart([x, msg.to_json()])
@@ -92,7 +94,7 @@ class ControllerNode(object):
                     self.redis_server.srem(bqueryd.REDIS_SET_KEY, x)
                     del self.others[x]
         # Disconnect from controllers not in current set
-        for x in self.others.keys()[:]: # iterate over a copy of keys so we can remove entries
+        for x in self.others.keys()[:]:  # iterate over a copy of keys so we can remove entries
             if x not in all_servers:
                 self.logger.critical('Disconnecting from %s' % x)
                 try:
@@ -180,10 +182,18 @@ class ControllerNode(object):
 
                     # if finished, aggregate the result
                     result_list = original_rpc['results'].values()
-                    new_result = create_result_from_response({'args':args, 'kwargs':kwargs}, result_list)
+                    new_result = create_result_from_response({'args': args, 'kwargs': kwargs}, result_list)
+
+                    # clean up memory
+                    del result_list
+
                     # We have received all the segment, send a reply to RPC caller
                     msg = original_rpc['msg']
                     msg.add_as_binary('result', new_result)
+
+                    del new_result
+                    gc.collect()
+
                     del self.rpc_segments[parent_token]
                 else:
                     # This was a segment result move on
@@ -203,7 +213,7 @@ class ControllerNode(object):
         nextq = self.worker_out_messages.get(nextq_key)
         self.worker_out_messages_sequence.append(nextq_key)
         if not nextq:
-            return # the next buffer is empty just return and try the next one in the next round
+            return  # the next buffer is empty just return and try the next one in the next round
 
         msg = nextq.pop(0)
         worker_id = msg.get('worker_id')
@@ -229,10 +239,10 @@ class ControllerNode(object):
     def handle_in(self):
         self.msg_count_in += 1
         data = self.socket.recv_multipart()
-        if len(data) == 3: # This is a RPC call from a zmq.REQ socket
+        if len(data) == 3:  # This is a RPC call from a zmq.REQ socket
             sender, _blank, msg_buf = data
             self.handle_rpc(sender, msg_factory(msg_buf))
-        elif len(data) == 2: # This is an internode call from another zmq.ROUTER, a Controller or Worker
+        elif len(data) == 2:  # This is an internode call from another zmq.ROUTER, a Controller or Worker
             sender, msg_buf = data
             msg = msg_factory(msg_buf)
             if sender in self.others:
@@ -357,7 +367,8 @@ class ControllerNode(object):
             else:
                 result = "Sleep needs an int or list of ints as arg[0]"
         elif msg['payload'] in ('groupby',):
-            result = self.handle_calc_message(msg)  # if result is not None something happened, return to caller immediately
+            result = self.handle_calc_message(
+                msg)  # if result is not None something happened, return to caller immediately
 
         if result:
             msg.add_as_binary('result', result)
@@ -371,7 +382,7 @@ class ControllerNode(object):
             return "A download needs kwargs: (filenames=, bucket=)"
 
         # Turn filenames into s3 URLs
-        filenames = ['s3://%s/%s' % (bucket, filename)  for filename in filenames]
+        filenames = ['s3://%s/%s' % (bucket, filename) for filename in filenames]
 
         # Check each filename for a ticket and see if is currently being downloaded...
         download_tickets = self.redis_server.hgetall(bqueryd.REDIS_DOWNLOAD_FILES_KEY)
@@ -390,9 +401,9 @@ class ControllerNode(object):
 
             for node in nodes:
                 # A progress slot contains a timestamp_filesize
-                progress_slot = '%s_%s' % (0, 0) # start the progress with a timestamp of loooon ago
+                progress_slot = '%s_%s' % (0, 0)  # start the progress with a timestamp of loooon ago
                 node_filename_slot = '%s_%s' % (node, filename)
-                self.redis_server.hset('ticket_'+ticket, node_filename_slot, progress_slot)
+                self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
         self.check_downloads()
         return ticket
 
@@ -436,14 +447,14 @@ class ControllerNode(object):
 
     def killall(self):
         self.killworkers()
-        m = Message({'payload':'kill'})
+        m = Message({'payload': 'kill'})
         for x in self.others:
             self.send(x, m.to_json(), is_rpc=True)
         self.kill()
         return 'dood'
 
     def kill(self):
-        #unregister with the Redis set
+        # unregister with the Redis set
         self.redis_server.srem(bqueryd.REDIS_SET_KEY, self.address)
         self.is_running = False
         return 'harakiri...'
@@ -456,7 +467,8 @@ class ControllerNode(object):
 
     def get_info(self):
         data = {'msg_count_in': self.msg_count_in, 'node': self.node_name,
-                'workers': self.worker_map, 'worker_out_messages': [(k,len(v)) for k,v in self.worker_out_messages.items()],
+                'workers': self.worker_map,
+                'worker_out_messages': [(k, len(v)) for k, v in self.worker_out_messages.items()],
                 'last_heartbeat': self.last_heartbeat, 'address': self.address,
                 'others': self.others,
                 'uptime': int(time.time() - self.start_time), 'start_time': self.start_time
@@ -486,7 +498,7 @@ class ControllerNode(object):
         download_tickets = self.redis_server.hgetall(bqueryd.REDIS_DOWNLOAD_FILES_KEY)
         movebcolz_list = set()
         for filename, ticket in download_tickets.items():
-            ticket_details = self.redis_server.hgetall('ticket_'+ticket)
+            ticket_details = self.redis_server.hgetall('ticket_' + ticket)
             # If this ticket is empty, all the movebcolz for every node has been done, and the
             # filename can be released
             if not ticket_details:
@@ -504,7 +516,6 @@ class ControllerNode(object):
                 if node != self.node_name:
                     continue
 
-
                 tmp = progress_slot.split('_')
                 if len(tmp) != 2:
                     self.logger.critical("Bogus progress_slot %s", progress_slot)
@@ -517,8 +528,6 @@ class ControllerNode(object):
 
                 in_progress_count += 1
 
-
-
                 if (time.time() - timestamp) > DOWNLOAD_MSG_INTERVAL:
                     # Send a download message for this file to a local worker
                     msg = Message({'payload': 'download',
@@ -527,9 +536,9 @@ class ControllerNode(object):
                                    'ticket': ticket})
                     self.worker_out_messages[None].append(msg)
                     progress_slot = '%s_%s' % (time.time(), -1)
-                    self.redis_server.hset('ticket_'+ticket, node_filename_slot, progress_slot)
+                    self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
 
-            if in_progress_count == 0: # every progress for this slot is set to DONE
+            if in_progress_count == 0:  # every progress for this slot is set to DONE
                 movebcolz_list.add(ticket)
 
         for ticket in movebcolz_list:
@@ -565,6 +574,7 @@ class ControllerNode(object):
             if os.path.exists(x):
                 os.remove(x)
 
+
 def create_result_from_response(params, result_list):
     if not result_list:
         new_result = pd.DataFrame()
@@ -584,4 +594,3 @@ def create_result_from_response(params, result_list):
                 new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols].sum()
 
     return new_result
-
