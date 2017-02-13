@@ -236,7 +236,7 @@ class WorkerNode(object):
 
         # output
         result_ctable.free_cachemem()
-        result_ctable.clean_tmp_rootdir()
+        # result_ctable.clean_tmp_rootdir()  # bcolz instead bquery object might be returned
         del result_ctable
 
         # buffer
