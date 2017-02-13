@@ -7,9 +7,10 @@ import zipfile
 import binascii
 import time
 import sys
+import shutil
 
 def get_my_ip():
-    eth_interfaces = sorted([ifname for ifname in netifaces.interfaces() if ifname.startswith('eth')])
+    eth_interfaces = sorted([ifname for ifname in netifaces.interfaces() if (ifname.startswith('eth') or ifname.startswith('en'))])
     if len(eth_interfaces) < 1:
         ifname = 'lo'
     else:
