@@ -7,12 +7,15 @@ import random
 import os
 import gc
 import shutil
+import tarfile
+import tempfile
 import socket
 import pandas as pd
 import redis
 import bqueryd
 from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, \
     BusyMessage, DoneMessage, StopMessage
+from bqueryd.tool import rm_file_or_dir
 from bqueryd.util import get_my_ip, bind_to_random_port
 
 POLLING_TIMEOUT = 500  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
@@ -174,25 +177,41 @@ class ControllerNode(object):
 
                 args, kwargs = msg.get_args_kwargs()
                 filename = args[0]
-                original_rpc['results'][filename] = msg.get_from_binary('result')
+                result_file = msg.get_from_binary('result')
+
+                # write result to a temp file
+                if result_file:
+                    tmp_file = tempfile.mktemp()
+                    with open(tmp_file, 'w') as file:
+                        file.write(result_file)
+                else:
+                    tmp_file = None
+
+                del result_file
+                original_rpc['results'][filename] = tmp_file
 
                 if len(original_rpc['results']) == len(original_rpc['filenames']):
                     # Check to see that there are no filenames with no Result yet
                     # TODO as soon as any workers gives an error abort the whole enchilada
 
-                    # if finished, aggregate the result
-                    result_list = original_rpc['results'].values()
-                    new_result = create_result_from_response({'args': args, 'kwargs': kwargs}, result_list)
-
-                    # clean up memory
-                    del result_list
+                    # if finished, aggregate the result to a combined "tarfile of tarfiles"
+                    tar_file = tempfile.mktemp()
+                    with tarfile.open(tar_file, mode='w') as archive:
+                        for filename, result_file in original_rpc['results'].items():
+                            if result_file is not None:
+                                archive.add(result_file, arcname=filename)
+                                # clean temp file
+                                rm_file_or_dir(result_file)
 
                     # We have received all the segment, send a reply to RPC caller
+                    del msg
                     msg = original_rpc['msg']
-                    msg.add_as_binary('result', new_result)
 
-                    del new_result
-                    gc.collect()
+                    # create message result and clean uop
+                    with open(tar_file, 'r') as file:
+                        # add result to message
+                        msg.add_as_binary('result', file.read())
+                    rm_file_or_dir(tar_file)
 
                     del self.rpc_segments[parent_token]
                 else:
@@ -576,22 +595,4 @@ class ControllerNode(object):
                 os.remove(x)
 
 
-def create_result_from_response(params, result_list):
-    if not result_list:
-        new_result = pd.DataFrame()
-    elif len(result_list) == 1:
-        new_result = result_list[0]
-    else:
-        new_result = pd.concat(result_list, ignore_index=True)
-
-        if params.get('kwargs', {}).get('aggregate', True) and not new_result.empty:
-            groupby_cols = params['args'][1]
-            aggregation_list = params['args'][2]
-            if not groupby_cols:
-                new_result = pd.DataFrame(new_result.sum()).transpose()
-            elif aggregation_list:
-                # aggregate over totals if needed
-                measure_cols = [x[2] for x in aggregation_list]
-                new_result = new_result.groupby(groupby_cols, as_index=False)[measure_cols].sum()
-
-    return new_result
+x

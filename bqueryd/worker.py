@@ -7,6 +7,7 @@ import bquery
 import bcolz
 import traceback
 import tempfile
+import tarfile
 import zipfile
 import shutil
 import boto
@@ -21,6 +22,7 @@ from ssl import SSLError
 import pandas as pd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage
+from bqueryd.tool import rm_file_or_dir
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
@@ -177,6 +179,9 @@ class WorkerNode(object):
             self.send(controller, msg)
 
     def handle_calc(self, msg):
+        tmp_dir = tempfile.mkdtemp(prefix='result_')
+        buf_file = tempfile.mktemp(prefix='tar_')
+
         args, kwargs = msg.get_args_kwargs()
         self.logger.info('doing calc %s' % args)
         filename = args[0]
@@ -212,18 +217,17 @@ class WorkerNode(object):
         # retrieve & aggregate if needed
         if aggregate:
             # aggregate by groupby parameters
-            result_ctable = ct.groupby(groupby_col_list, aggregation_list, bool_arr=bool_arr)
-            buf = result_ctable.todataframe()
+            result_ctable = ct.groupby(groupby_col_list, aggregation_list, bool_arr=bool_arr,
+                                       rootdir=tmp_dir, mode='w')
         else:
             # direct result from the ctable
             column_list = groupby_col_list + [x[0] for x in aggregation_list]
             if bool_arr is not None:
-                result_ctable = bcolz.fromiter(ct[column_list].where(bool_arr), ct[column_list].dtype, sum(bool_arr))
+                result_ctable = bcolz.fromiter(ct[column_list].where(bool_arr), ct[column_list].dtype, sum(bool_arr),
+                                               rootdir=tmp_dir, mode='w')
             else:
-                result_ctable = bcolz.fromiter(ct[column_list], ct[column_list].dtype, ct.len)
-            buf = result_ctable[column_list].todataframe()
-
-        msg.add_as_binary('result', buf)
+                result_ctable = bcolz.fromiter(ct[column_list], ct[column_list].dtype, ct.len,
+                                               rootdir=tmp_dir, mode='w')
 
         # *** clean up temporary files and memory objects
         # filter
@@ -234,15 +238,19 @@ class WorkerNode(object):
         ct.clean_tmp_rootdir()
         del ct
 
-        # output
+        # save result to archive
+        result_ctable.flush()
         result_ctable.free_cachemem()
-        # result_ctable.clean_tmp_rootdir()  # bcolz instead bquery object might be returned
+        with tarfile.open(buf_file, mode='w') as archive:
+            archive.add(tmp_dir, arcname=os.path.basename(tmp_dir))
         del result_ctable
+        rm_file_or_dir(tmp_dir)
 
-        # buffer
-        del buf
-
-        gc.collect()
+        # create message
+        with open(buf_file, 'r') as file:
+            # add result to message
+            msg.add_as_binary('result', file.read())
+        rm_file_or_dir(buf_file)
 
         return msg
 
@@ -335,7 +343,6 @@ class WorkerNode(object):
             ready_path = os.path.join(ticket_path, filename)
             self.logger.debug("moving %s %s" % (ready_path, prod_path))
             shutil.move(ready_path, prod_path)
-
 
         # Remove all Redis entries for this node and ticket
         # it can't be done per file as we don't have the bucket name from which a file was downloaded
