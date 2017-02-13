@@ -84,3 +84,10 @@ def show_busy_downloads(info_data):
                     else:
                         print x
                 sys.stdout.write('\n')
+
+def tree_checksum(path):
+    filenames = set()
+    for root, dirs, filenames in os.walk(path):
+        for filename in filenames:
+            filenames.add(os.path.join(root, filename))
+    return ''.join(sorted(filenames))

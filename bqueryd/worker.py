@@ -331,11 +331,11 @@ class WorkerNode(object):
 
         for filename in os.listdir(ticket_path):
             prod_path = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
-            if os.path.exists(prod_path):
-                shutil.rmtree(prod_path, ignore_errors=True)
+            bqueryd.util.rm_file_or_dir(prod_path)
             ready_path = os.path.join(ticket_path, filename)
             self.logger.debug("moving %s %s" % (ready_path, prod_path))
-            os.rename(ready_path, prod_path)
+            shutil.move(ready_path, prod_path)
+
 
         # Remove all Redis entries for this node and ticket
         # it can't be done per file as we don't have the bucket name from which a file was downloaded
