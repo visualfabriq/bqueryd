@@ -273,9 +273,11 @@ class ControllerNode(object):
             # Check the ticket in this number, if it is in the self.rpc_segments[ticket] of this controller
             # there is a RPC call waiting for it, so also answer that one
             ticket = msg.get('ticket')
-            msg = self.rpc_segments.get(ticket, {})
-            if 'token' in msg:
-                self.rpc_results.append(msg) 
+            if ticket in self.rpc_segments:
+                msg = self.rpc_segments[ticket]
+                if 'token' in msg:
+                    self.rpc_results.append(msg)
+                del self.rpc_segments[ticket] 
         else:
             self.logger.debug("Got a msg but don't know what to do with it %s" % msg)
 
