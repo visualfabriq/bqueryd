@@ -53,6 +53,27 @@ def zip_to_file(file_path, destination):
 
     return zip_filename, checksum
 
+def rm_file_or_dir(path):
+    if os.path.exists(path):
+        if os.path.isdir(path):
+            if os.path.islink(path):
+                os.unlink(path)
+            else:
+                shutil.rmtree(path)
+        else:
+            if os.path.islink(path):
+                os.unlink(path)
+            else:
+                os.remove(path)
+
+def tree_checksum(path):
+    allfilenames = set()
+    for root, dirs, filenames in os.walk(path):
+        for filename in filenames:
+            allfilenames.add(os.path.join(root, filename))
+    buf = ''.join(sorted(allfilenames))
+    return hex(binascii.crc32(buf) & 0xffffffff)
+
 ###################################################################################################
 # Various Utility methods for user-friendly info display
 
@@ -84,10 +105,3 @@ def show_busy_downloads(info_data):
                     else:
                         print x
                 sys.stdout.write('\n')
-
-def tree_checksum(path):
-    filenames = set()
-    for root, dirs, filenames in os.walk(path):
-        for filename in filenames:
-            filenames.add(os.path.join(root, filename))
-    return ''.join(sorted(filenames))
