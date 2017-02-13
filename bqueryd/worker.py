@@ -218,7 +218,7 @@ class WorkerNode(object):
         if aggregate:
             # aggregate by groupby parameters
             result_ctable = ct.groupby(groupby_col_list, aggregation_list, bool_arr=bool_arr,
-                                       rootdir=tmp_dir, mode='w')
+                                       rootdir=tmp_dir)
         else:
             # direct result from the ctable
             column_list = groupby_col_list + [x[0] for x in aggregation_list]
