@@ -219,7 +219,10 @@ class ControllerNode(object):
                     continue
 
             msg_id = binascii.unhexlify(msg.get('token'))
-            self.send(msg_id, msg.to_json(), is_rpc=True)
+            if 'data' in msg:
+                self.send(msg_id, msg['data'], is_rpc=True)
+            else:
+                self.send(msg_id, msg.to_json(), is_rpc=True)
             self.logger.debug('RPC Msg handled: %s' % msg.get('payload', '?'))
 
     def handle_out(self):
@@ -258,16 +261,22 @@ class ControllerNode(object):
     def handle_in(self):
         self.msg_count_in += 1
         data = self.socket.recv_multipart()
-        if len(data) == 3:  # This is a RPC call from a zmq.REQ socket
-            sender, _blank, msg_buf = data
-            self.handle_rpc(sender, msg_factory(msg_buf))
+        if len(data) == 3:  
+            if data[1] == '': # This is a RPC call from a zmq.REQ socket
+                sender, _blank, msg_buf = data
+                self.handle_rpc(sender, msg_factory(msg_buf))
+                return                
+            sender, msg_buf, binary = data
         elif len(data) == 2:  # This is an internode call from another zmq.ROUTER, a Controller or Worker
             sender, msg_buf = data
-            msg = msg_factory(msg_buf)
-            if sender in self.others:
-                self.handle_peer(sender, msg)
-            else:
-                self.handle_worker(sender, msg)
+            binary = None
+        msg = msg_factory(msg_buf)
+        if binary:
+            msg['data'] = binary
+        if sender in self.others:
+            self.handle_peer(sender, msg)
+        else:
+            self.handle_worker(sender, msg)
 
     def handle_peer(self, sender, msg):
         if msg.isa('loglevel'):
@@ -376,7 +385,9 @@ class ControllerNode(object):
             result = self.killall()
         elif msg.isa('download'):
             result = self.setup_download(msg)
-
+        elif msg.isa('readfile'):
+            self.worker_out_messages[None].append(msg.copy())
+            result = None
         elif msg['payload'] in ('sleep',):
             args, kwargs = msg.get_args_kwargs()
             if args:

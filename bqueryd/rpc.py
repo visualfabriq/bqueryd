@@ -10,6 +10,7 @@ import smart_open
 import binascii
 from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
 import traceback
+import json
 
 class RPCError(Exception):
     """Base class for exceptions in this module."""
@@ -84,7 +85,7 @@ class RPC(object):
             for x in range(self.retries):
                 try:
                     self.controller.send_json(msg)
-                    rep = msg_factory(self.controller.recv_json())
+                    rep = self.controller.recv()
                     break
                 except Exception, e:
                     self.controller.close()
@@ -97,9 +98,13 @@ class RPC(object):
                         pass
             if not rep:
                 raise RPCError("No response from DQE, retries %s exceeded" % self.retries)
+            try:
+                rep = msg_factory(json.loads(rep))
+                result = rep.get_from_binary('result')
+            except (ValueError, TypeError):
+                result = rep
             if isinstance(rep, ErrorMessage):
                 raise RPCError(rep.get('payload'))
-            result = rep.get_from_binary('result')
             stop_time = time.time()
             self.last_call_duration = stop_time - start_time
             return result
