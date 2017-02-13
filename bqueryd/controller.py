@@ -181,7 +181,7 @@ class ControllerNode(object):
 
                 # write result to a temp file
                 if result_file:
-                    tmp_file = tempfile.mktemp()
+                    tmp_file = tempfile.mktemp(prefix='sub_')
                     with open(tmp_file, 'w') as file:
                         file.write(result_file)
                 else:
@@ -195,7 +195,7 @@ class ControllerNode(object):
                     # TODO as soon as any workers gives an error abort the whole enchilada
 
                     # if finished, aggregate the result to a combined "tarfile of tarfiles"
-                    tar_file = tempfile.mktemp()
+                    tar_file = tempfile.mktemp(prefix='main_')
                     with tarfile.open(tar_file, mode='w') as archive:
                         for filename, result_file in original_rpc['results'].items():
                             if result_file is not None:

@@ -215,6 +215,7 @@ class WorkerNode(object):
             bool_arr = ct.is_in_ordered_subgroups(basket_col=expand_filter_column, bool_arr=bool_arr)
 
         # retrieve & aggregate if needed
+        rm_file_or_dir(tmp_dir)
         if aggregate:
             # aggregate by groupby parameters
             result_ctable = ct.groupby(groupby_col_list, aggregation_list, bool_arr=bool_arr,
