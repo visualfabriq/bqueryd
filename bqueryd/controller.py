@@ -210,7 +210,7 @@ class ControllerNode(object):
                     # create message result and clean uop
                     with open(tar_file, 'r') as file:
                         # add result to message
-                        msg.add_as_binary('result', file.read())
+                        msg['data'] = file.read()
                     rm_file_or_dir(tar_file)
 
                     del self.rpc_segments[parent_token]
