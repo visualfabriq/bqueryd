@@ -7,9 +7,10 @@ import zipfile
 import binascii
 import time
 import sys
+import shutil
 
 def get_my_ip():
-    eth_interfaces = sorted([ifname for ifname in netifaces.interfaces() if ifname.startswith('eth')])
+    eth_interfaces = sorted([ifname for ifname in netifaces.interfaces() if (ifname.startswith('eth') or ifname.startswith('en'))])
     if len(eth_interfaces) < 1:
         ifname = 'lo'
     else:
@@ -88,20 +89,3 @@ def show_workers(info_data, only_busy=False):
             if only_busy and not nn.get('busy'):
                 continue
             print '   ', time.ctime(nn['last_seen']), nn.get('busy')
-
-def show_busy_downloads(info_data):
-    all_downloads = info_data['downloads'].copy()
-    for x in info_data.get('others', {}).values():
-        all_downloads.update(x.get('downloads'))
-    for ticket, x in all_downloads.items():
-        print ticket, time.ctime(x['created'])
-        for filename, nodelist in x['progress'].items():
-            print filename
-            for node, x in nodelist.items():
-                print '   ', node,
-                if not x.get('done'):
-                    if 'progress' in x:
-                        print int(float(x['progress']) / x.get('size', x['progress']) * 100), '%'
-                    else:
-                        print x
-                sys.stdout.write('\n')

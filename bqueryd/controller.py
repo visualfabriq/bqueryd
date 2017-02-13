@@ -289,6 +289,14 @@ class ControllerNode(object):
         elif msg.isa('movebcolz'):
             msg['worker_id'] = '__needs_local__'
             self.worker_out_messages[None].append(msg)
+            # Check the ticket in this number, if it is in the self.rpc_segments[ticket] of this controller
+            # there is a RPC call waiting for it, so also answer that one
+            ticket = msg.get('ticket')
+            if ticket in self.rpc_segments:
+                msg = self.rpc_segments[ticket]
+                if 'token' in msg:
+                    self.rpc_results.append(msg)
+                del self.rpc_segments[ticket] 
         else:
             self.logger.debug("Got a msg but don't know what to do with it %s" % msg)
 
@@ -397,6 +405,7 @@ class ControllerNode(object):
         args, kwargs = msg.get_args_kwargs()
         filenames = kwargs.get('filenames')
         bucket = kwargs.get('bucket')
+        wait = kwargs.get('wait', False)
         if not (filenames and bucket):
             return "A download needs kwargs: (filenames=, bucket=)"
 
@@ -424,6 +433,11 @@ class ControllerNode(object):
                 node_filename_slot = '%s_%s' % (node, filename)
                 self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
         self.check_downloads()
+        if wait:
+            msg.add_as_binary('result', ticket)
+            self.rpc_segments[ticket] = msg
+            return None
+
         return ticket
 
     def handle_calc_message(self, msg):
