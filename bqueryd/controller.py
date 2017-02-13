@@ -594,5 +594,3 @@ class ControllerNode(object):
             if os.path.exists(x):
                 os.remove(x)
 
-
-x
