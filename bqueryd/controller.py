@@ -19,7 +19,7 @@ from bqueryd.tool import rm_file_or_dir
 from bqueryd.util import get_my_ip, bind_to_random_port
 
 POLLING_TIMEOUT = 500  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
-DEAD_WORKER_TIMEOUT = 30 * 60  # time in seconds that we wait for a worker to respond before being removed
+DEAD_WORKER_TIMEOUT = 60  # time in seconds that we wait for a worker to respond before being removed
 HEARTBEAT_INTERVAL = 5  # time in seconds between doing heartbeats
 MIN_CALCWORKER_COUNT = 0.25  # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
 DOWNLOAD_MSG_INTERVAL = 60  # How often in seconds to repeat sending download messages to controller nodes for files.
