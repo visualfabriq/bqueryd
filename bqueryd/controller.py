@@ -124,7 +124,8 @@ class ControllerNode(object):
                 continue
             if needs_local and worker.get('reserved_4_calc'):
                 continue
-            free_local_workers.append(worker_id)
+            if worker.get('node') == self.node_name:
+                free_local_workers.append(worker_id)
         # if there are no free workers at all, just bail
         if not free_workers:
             return None
@@ -227,17 +228,29 @@ class ControllerNode(object):
 
     def handle_out(self):
         # If there have been new affinity keys added, rotate them
-        for x in self.worker_out_messages:
-            if x not in self.worker_out_messages_sequence:
-                self.worker_out_messages_sequence.append(x)
+        for k,v in self.worker_out_messages.items():
+            if v and (k not in self.worker_out_messages_sequence):
+                self.worker_out_messages_sequence.append(k)
+
+        # remove unused affinities
+
+        remove_list = [x for x in self.worker_out_messages_sequence if x not in self.worker_out_messages]
+        for affinity in remove_list:
+            self.worker_out_messages_sequence.remove(affinity)
+
+        if not self.worker_out_messages_sequence:
+            # nothing to do
+            return
 
         nextq_key = self.worker_out_messages_sequence.pop(0)
         nextq = self.worker_out_messages.get(nextq_key)
         self.worker_out_messages_sequence.append(nextq_key)
         if not nextq:
-            return  # the next buffer is empty just return and try the next one in the next round
+            if nextq_key: # Only delete those for which there is an affinity, the None q is default and should stay
+                del self.worker_out_messages[nextq_key]
+            return # the next buffer is empty just return and try the next one in the next round
 
-        msg = nextq.pop(0)
+        msg = nextq[0]
         worker_id = msg.get('worker_id')
 
         # Assumption now is that all workers can serve requests to all files,
@@ -250,8 +263,9 @@ class ControllerNode(object):
 
         if not worker_id:
             # self.logger.debug('No free workers at this time')
-            nextq.append(msg)
             return
+
+        msg = nextq.pop(0)
 
         # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
         self.worker_map[worker_id]['last_sent'] = time.time()
@@ -261,7 +275,7 @@ class ControllerNode(object):
     def handle_in(self):
         self.msg_count_in += 1
         data = self.socket.recv_multipart()
-        if len(data) == 3:  
+        if len(data) == 3:
             if data[1] == '': # This is a RPC call from a zmq.REQ socket
                 sender, _blank, msg_buf = data
                 self.handle_rpc(sender, msg_factory(msg_buf))
@@ -503,7 +517,7 @@ class ControllerNode(object):
                 'workers': self.worker_map,
                 'worker_out_messages': [(k, len(v)) for k, v in self.worker_out_messages.items()],
                 'last_heartbeat': self.last_heartbeat, 'address': self.address,
-                'others': self.others,
+                'others': self.others, 'rpc_results_len': len(self.rpc_results),
                 'uptime': int(time.time() - self.start_time), 'start_time': self.start_time
                 }
         return data
