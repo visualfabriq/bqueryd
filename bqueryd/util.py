@@ -12,12 +12,12 @@ import shutil
 def get_my_ip():
     eth_interfaces = sorted([ifname for ifname in netifaces.interfaces() if (ifname.startswith('eth') or ifname.startswith('en'))])
     if len(eth_interfaces) < 1:
-        return '127.0.0.1'
-    for ifname in eth_interfaces:
-        for x in netifaces.ifaddresses(ifname).get(netifaces.AF_INET, []):
-            if 'addr' in x:
-                return x['addr']
-    return '127.0.0.1' # Return localhost if no AF_NET address can be found
+        ifname = 'lo'
+    else:
+        ifname = eth_interfaces[-1]
+    for x in netifaces.ifaddresses(ifname)[netifaces.AF_INET]:
+        # Return first addr found
+        return x['addr']
 
 def bind_to_random_port(socket, addr, min_port=49152, max_port=65536, max_tries=100):
     "We can't just use the zmq.Socket.bind_to_random_port, as we wan't to set the identity before binding"
