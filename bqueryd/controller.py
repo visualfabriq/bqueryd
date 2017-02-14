@@ -177,7 +177,7 @@ class ControllerNode(object):
 
                 args, kwargs = msg.get_args_kwargs()
                 filename = args[0]
-                result_file = msg.get_from_binary('result')
+                result_file = msg['data']
 
                 # write result to a temp file
                 if result_file:
