@@ -25,7 +25,7 @@ DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
 WRM_DELAY = 20 # how often in seconds to send a WorkerRegisterMessage
-MAX_MESSAGES = 1000
+MAX_MESSAGES = 20
 bcolz.set_nthreads(1)
 
 
@@ -123,13 +123,14 @@ class WorkerNode(object):
             self.logger.critical('Received a msg with len != 2, something seriously wrong. ')
             return
 
-        self.msg_count += 1
-        if self.msg_count > MAX_MESSAGES:
-            self.logger.critical('MAX_MESSAGES of %s reached, restarting' % MAX_MESSAGES)
-            self.running = False
-
         sender, msg_buf = tmp
         msg = msg_factory(msg_buf)
+
+        if msg.isa('groupby'):
+            self.msg_count += 1
+            if self.msg_count > MAX_MESSAGES:
+                self.logger.critical('MAX_MESSAGES of %s reached, restarting' % MAX_MESSAGES)
+                self.running = False
 
         data = self.controllers.get(sender)
         if not data:
@@ -311,16 +312,14 @@ class WorkerNode(object):
         self.logger.info('movebcolz %s' % msg['ticket'])
         ticket = msg['ticket']
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
-        if not os.path.exists(ticket_path):
-            return
-
-        for filename in os.listdir(ticket_path):
-            prod_path = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
-            if os.path.exists(prod_path):
-                shutil.rmtree(prod_path, ignore_errors=True)
-            ready_path = os.path.join(ticket_path, filename)
-            self.logger.debug("moving %s %s" % (ready_path, prod_path))
-            os.rename(ready_path, prod_path)
+        if os.path.exists(ticket_path):
+            for filename in os.listdir(ticket_path):
+                prod_path = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
+                if os.path.exists(prod_path):
+                    shutil.rmtree(prod_path, ignore_errors=True)
+                ready_path = os.path.join(ticket_path, filename)
+                self.logger.debug("moving %s %s" % (ready_path, prod_path))
+                os.rename(ready_path, prod_path)
 
         # Remove all Redis entries for this node and ticket
         # it can't be done per file as we don't have the bucket name from which a file was downloaded
