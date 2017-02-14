@@ -294,18 +294,7 @@ class ControllerNode(object):
                 self.others[addr]['node'] = node
                 self.others[addr]['uptime'] = uptime
             else:
-                self.logger.critical("bogus Info message received from %s %s", sender, msg)
-        elif msg.isa('movebcolz'):
-            msg['worker_id'] = '__needs_local__'
-            self.worker_out_messages[None].append(msg)
-            # Check the ticket in this number, if it is in the self.rpc_segments[ticket] of this controller
-            # there is a RPC call waiting for it, so also answer that one
-            ticket = msg.get('ticket')
-            if ticket in self.rpc_segments:
-                msg = self.rpc_segments[ticket]
-                if 'token' in msg:
-                    self.rpc_results.append(msg)
-                del self.rpc_segments[ticket] 
+                self.logger.critical("bogus Info message received from %s %s", sender, msg) 
         else:
             self.logger.debug("Got a msg but don't know what to do with it %s" % msg)
 
@@ -588,10 +577,16 @@ class ControllerNode(object):
 
         for ticket in movebcolz_list:
             self.logger.debug('Download done %s, sending movebcolz message' % ticket)
-            m = Message({'payload': 'movebcolz', 'ticket': ticket})
-            all_addresses = self.others.keys() + [self.address]
-            for controller_address in all_addresses:
-                self.send(controller_address, m.to_json())
+            msg = Message({'payload': 'movebcolz', 'ticket': ticket})
+            msg['worker_id'] = '__needs_local__'
+            self.worker_out_messages[None].append(msg)
+            # Check the ticket in this number, if it is in the self.rpc_segments[ticket] of this controller
+            # there is a RPC call waiting for it, so also answer that one
+            if ticket in self.rpc_segments:
+                msg = self.rpc_segments[ticket]
+                if 'token' in msg:
+                    self.rpc_results.append(msg)
+                del self.rpc_segments[ticket]
 
     def go(self):
         self.logger.info('Starting #####################################')
