@@ -330,6 +330,7 @@ class ControllerNode(object):
                 self.files_map.setdefault(filename, set()).add(worker_id)
             self.worker_map[worker_id]['node'] = msg.get('node', '...')
             self.worker_map[worker_id]['uptime'] = msg.get('uptime', 0)
+            self.worker_map[worker_id]['pid'] = msg.get('pid', '?')
             if self.worker_map[worker_id]['node'] == self.node_name:
                 num_reserved = self.calc_num_reserved_workers()
                 if num_reserved <= MIN_CALCWORKER_COUNT:
