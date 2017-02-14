@@ -28,7 +28,7 @@ DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
 WRM_DELAY = 20  # how often in seconds to send a WorkerRegisterMessage
-MAX_MESSAGES = 1000
+MAX_MESSAGES = 10
 bcolz.set_nthreads(1)
 
 
