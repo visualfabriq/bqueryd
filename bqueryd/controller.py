@@ -55,8 +55,8 @@ class ControllerNode(object):
         self.rpc_segments = {}  # Certain RPC calls get split and divided over workers, this dict tracks the original RPCs
         self.worker_map = {}  # maintain a list of connected workers TODO get rid of unresponsive ones...
         self.files_map = {}  # shows on which workers a file is available on
-        self.worker_out_messages = {None: []}  # A dict of buffers, used to round-robin based on message affinity
-        self.worker_out_messages_sequence = [None]  # used to round-robin the outgoing messages
+        self.worker_out_messages = {}  # A dict of buffers, used to round-robin based on message affinity
+        self.worker_out_messages_sequence = []  # used to round-robin the outgoing messages
         self.is_running = True
         self.last_heartbeat = 0
         self.others = {}  # A dict of other Controllers running on other DQE nodes
@@ -226,18 +226,26 @@ class ControllerNode(object):
             self.logger.debug('RPC Msg handled: %s' % msg.get('payload', '?'))
 
     def handle_out(self):
-        # If there have been new affinity keys added, rotate them
-        for x in self.worker_out_messages:
-            if x not in self.worker_out_messages_sequence:
-                self.worker_out_messages_sequence.append(x)
+        if self.worker_out_messages_sequence is None:
+            self.worker_out_messages_sequence = []
+        if self.worker_out_messages is None:
+            self.worker_out_messages = {}
 
-        nextq_key = self.worker_out_messages_sequence.pop(0)
-        nextq = self.worker_out_messages.get(nextq_key)
-        self.worker_out_messages_sequence.append(nextq_key)
-        if not nextq:
+        # clean out messages if not relevant
+        self.worker_out_messages = {k: v for k, v in self.worker_out_messages.items() if v}
+        # only keep relevant keys
+        self.worker_out_messages_sequence = [aff for aff in self.worker_out_messages_sequence
+                                             if aff in self.worker_out_messages]
+        # add missing keys
+        self.worker_out_messages_sequence.extend([aff for aff in self.worker_out_messages.keys()
+                                                  if aff not in self.worker_out_messages_sequence])
+
+        if not self.worker_out_messages_sequence:
             return  # the next buffer is empty just return and try the next one in the next round
 
-        msg = nextq.pop(0)
+        # take the first eligible
+        nextq_key = self.worker_out_messages_sequence[0]
+        msg = self.worker_out_messages[nextq_key][0]  # we ensured before we only have valid reasons
         worker_id = msg.get('worker_id')
 
         # Assumption now is that all workers can serve requests to all files,
@@ -250,8 +258,14 @@ class ControllerNode(object):
 
         if not worker_id:
             # self.logger.debug('No free workers at this time')
-            nextq.append(msg)
+            # reset the queue
+            self.worker_out_messages[nextq_key].append(msg)
             return
+
+        # remove the message from the send list
+        self.worker_out_messages[nextq_key] = self.worker_out_messages[nextq_key][1:]
+        # now put the current affinity at the end
+        self.worker_out_messages_sequence = self.worker_out_messages_sequence[1:].append(nextq_key)
 
         # TODO Add a tracking of which requests have been sent out to the worker, and do retries with timeouts
         self.worker_map[worker_id]['last_sent'] = time.time()
@@ -375,12 +389,20 @@ class ControllerNode(object):
         elif msg.isa('download'):
             result = self.setup_download(msg)
         elif msg.isa('readfile'):
+            if self.worker_out_messages is None:
+                self.worker_out_messages = {}
+            if None not in self.worker_out_messages:
+                self.worker_out_messages[None] = []
             self.worker_out_messages[None].append(msg.copy())
             result = None
         elif msg['payload'] in ('sleep',):
             args, kwargs = msg.get_args_kwargs()
             if args:
                 if type(args[0]) is int:
+                    if self.worker_out_messages is None:
+                        self.worker_out_messages = {}
+                    if None not in self.worker_out_messages:
+                        self.worker_out_messages[None] = []
                     self.worker_out_messages[None].append(msg.copy())
                     result = None
                 else:
@@ -562,13 +584,16 @@ class ControllerNode(object):
                 if node != self.node_name:
                     continue
 
-
                 if (time.time() - timestamp) > DOWNLOAD_MSG_INTERVAL:
                     # Send a download message for this file to a local worker
                     msg = Message({'payload': 'download',
                                    'worker_id': '__needs_local__',
                                    'fileurl': filename,
                                    'ticket': ticket})
+                    if self.worker_out_messages is None:
+                        self.worker_out_messages = {}
+                    if None not in self.worker_out_messages:
+                        self.worker_out_messages[None] = []
                     self.worker_out_messages[None].append(msg)
                     progress_slot = '%s_%s' % (time.time(), -1)
                     self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)

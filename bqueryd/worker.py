@@ -26,7 +26,7 @@ DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
 WRM_DELAY = 20  # how often in seconds to send a WorkerRegisterMessage
-MAX_MESSAGES = 10  # after how many messages should the controller be restarted
+MAX_MESSAGES = 200  # after how many messages should the controller be restarted
 MAX_MESSAGES = int(MAX_MESSAGES + 0.30 * MAX_MESSAGES * (random.random() - 0.5))  # randomize actual amount
 bcolz.set_nthreads(1)
 
@@ -129,13 +129,14 @@ class WorkerNode(object):
             self.logger.critical('Received a msg with len != 2, something seriously wrong. ')
             return
 
-        self.msg_count += 1
-        if self.msg_count > MAX_MESSAGES:
-            self.logger.critical('MAX_MESSAGES of %s reached, restarting' % MAX_MESSAGES)
-            self.running = False
-
         sender, msg_buf = tmp
         msg = msg_factory(msg_buf)
+
+        if msg.isa('groupby'):
+            self.msg_count += 1
+            if self.msg_count > MAX_MESSAGES:
+                self.logger.critical('MAX_MESSAGES of %s reached, restarting' % MAX_MESSAGES)
+                self.running = False
 
         data = self.controllers.get(sender)
         if not data:
