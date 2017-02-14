@@ -598,7 +598,7 @@ class ControllerNode(object):
 
         while self.is_running:
             try:
-                time.sleep(0.0001)
+                time.sleep(0.001)
                 self.heartbeat()
                 self.free_dead_workers()
                 for sock, event in self.poller.poll(timeout=POLLING_TIMEOUT):
