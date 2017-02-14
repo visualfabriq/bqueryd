@@ -57,7 +57,12 @@ class WorkerNode(object):
 
     def send(self, addr, msg):
         try:
-            self.socket.send_multipart([addr, msg.to_json()])
+            if 'data' in msg:
+                data = msg['data']
+                del msg['data']
+                self.socket.send_multipart([addr, msg.to_json(), data])
+            else:    
+                self.socket.send_multipart([addr, msg.to_json()])
         except zmq.ZMQError, ze:
             self.logger.critical("Problem with %s: %s" % (addr, ze))
 
@@ -205,7 +210,7 @@ class WorkerNode(object):
             # quickly verify the where_terms_list
             if not ct.where_terms_factorization_check(where_terms_list):
                 # return an empty result because the where terms do not give a result for this ctable
-                msg.add_as_binary('result', pd.DataFrame())
+                msg['data'] = ''
                 return msg
             # else create the boolean array
             bool_arr = ct.where_terms(where_terms_list, cache=True)
@@ -250,7 +255,7 @@ class WorkerNode(object):
         # create message
         with open(buf_file, 'r') as file:
             # add result to message
-            msg.add_as_binary('result', file.read())
+            msg['data'] = file.read()
         rm_file_or_dir(buf_file)
 
         return msg
@@ -367,6 +372,9 @@ class WorkerNode(object):
                 self.logger.setLevel(loglevel)
                 self.logger.info("Set loglevel to %s" % loglevel)
             return
+        elif msg.isa('readfile'):
+            args, kwargs = msg.get_args_kwargs()
+            msg['data'] = open(args[0]).read()
         elif msg.isa('sleep'):
             args, kwargs = msg.get_args_kwargs()
             time.sleep(float(args[0]))
