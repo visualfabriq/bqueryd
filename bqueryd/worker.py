@@ -210,7 +210,7 @@ class WorkerNode(object):
             # quickly verify the where_terms_list
             if not ct.where_terms_factorization_check(where_terms_list):
                 # return an empty result because the where terms do not give a result for this ctable
-                msg.add_as_binary('result', pd.DataFrame())
+                msg['data'] = ''
                 return msg
             # else create the boolean array
             bool_arr = ct.where_terms(where_terms_list, cache=True)
