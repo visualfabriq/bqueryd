@@ -1,5 +1,4 @@
 import os
-import gc
 import errno
 import time
 import zmq
@@ -19,7 +18,6 @@ import bqueryd
 import socket
 import smart_open
 from ssl import SSLError
-import pandas as pd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage
 from bqueryd.tool import rm_file_or_dir
@@ -28,7 +26,8 @@ DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
 WRM_DELAY = 20  # how often in seconds to send a WorkerRegisterMessage
-MAX_MESSAGES = 10
+MAX_MESSAGES = 10  # after how many messages should the controller be restarted
+MAX_MESSAGES = int(MAX_MESSAGES + 0.30 * MAX_MESSAGES * (random.random() - 0.5))  # randomize actual amount
 bcolz.set_nthreads(1)
 
 
