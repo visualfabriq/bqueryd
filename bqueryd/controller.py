@@ -557,10 +557,11 @@ class ControllerNode(object):
                 if progress == 'DONE':
                     continue
 
+                in_progress_count += 1
+
                 if node != self.node_name:
                     continue
 
-                in_progress_count += 1
 
                 if (time.time() - timestamp) > DOWNLOAD_MSG_INTERVAL:
                     # Send a download message for this file to a local worker
