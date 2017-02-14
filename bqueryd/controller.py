@@ -541,7 +541,7 @@ class ControllerNode(object):
     def free_dead_workers(self):
         now = time.time()
         for worker_id, worker in self.worker_map.items():
-            if (now - worker.get('last_seen', now)).total_seconds() > DEAD_WORKER_TIMEOUT:
+            if (now - worker.get('last_seen', now)) > DEAD_WORKER_TIMEOUT:
                 self.remove_worker(worker_id)
 
     def check_downloads(self):
