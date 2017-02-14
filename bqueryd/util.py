@@ -7,9 +7,10 @@ import zipfile
 import binascii
 import time
 import sys
+import shutil
 
 def get_my_ip():
-    eth_interfaces = sorted([ifname for ifname in netifaces.interfaces() if ifname.startswith('eth')])
+    eth_interfaces = sorted([ifname for ifname in netifaces.interfaces() if (ifname.startswith('eth') or ifname.startswith('en'))])
     if len(eth_interfaces) < 1:
         ifname = 'lo'
     else:
@@ -53,6 +54,27 @@ def zip_to_file(file_path, destination):
 
     return zip_filename, checksum
 
+def rm_file_or_dir(path):
+    if os.path.exists(path):
+        if os.path.isdir(path):
+            if os.path.islink(path):
+                os.unlink(path)
+            else:
+                shutil.rmtree(path)
+        else:
+            if os.path.islink(path):
+                os.unlink(path)
+            else:
+                os.remove(path)
+
+def tree_checksum(path):
+    allfilenames = set()
+    for root, dirs, filenames in os.walk(path):
+        for filename in filenames:
+            allfilenames.add(os.path.join(root, filename))
+    buf = ''.join(sorted(allfilenames))
+    return hex(binascii.crc32(buf) & 0xffffffff)
+
 ###################################################################################################
 # Various Utility methods for user-friendly info display
 
@@ -67,20 +89,3 @@ def show_workers(info_data, only_busy=False):
             if only_busy and not nn.get('busy'):
                 continue
             print '   ', time.ctime(nn['last_seen']), nn.get('busy')
-
-def show_busy_downloads(info_data):
-    all_downloads = info_data['downloads'].copy()
-    for x in info_data.get('others', {}).values():
-        all_downloads.update(x.get('downloads'))
-    for ticket, x in all_downloads.items():
-        print ticket, time.ctime(x['created'])
-        for filename, nodelist in x['progress'].items():
-            print filename
-            for node, x in nodelist.items():
-                print '   ', node,
-                if not x.get('done'):
-                    if 'progress' in x:
-                        print int(float(x['progress']) / x.get('size', x['progress']) * 100), '%'
-                    else:
-                        print x
-                sys.stdout.write('\n')

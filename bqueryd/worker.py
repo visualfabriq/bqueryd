@@ -6,6 +6,7 @@ import bquery
 import bcolz
 import traceback
 import tempfile
+import tarfile
 import zipfile
 import shutil
 import boto
@@ -17,20 +18,20 @@ import bqueryd
 import socket
 import smart_open
 from ssl import SSLError
-import pandas as pd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage
+from bqueryd.tool import rm_file_or_dir
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
-WRM_DELAY = 20 # how often in seconds to send a WorkerRegisterMessage
-MAX_MESSAGES = 20
+WRM_DELAY = 20  # how often in seconds to send a WorkerRegisterMessage
+MAX_MESSAGES = 20  # after how many messages should the controller be restarted
+MAX_MESSAGES = int(MAX_MESSAGES + 0.30 * MAX_MESSAGES * (random.random() - 0.5))  # randomize actual amount
 bcolz.set_nthreads(1)
 
 
 class WorkerNode(object):
-
     def __init__(self, data_dir=bqueryd.DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
             raise Exception("Datadir %s is not a valid difrectory" % data_dir)
@@ -43,19 +44,24 @@ class WorkerNode(object):
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.identity = self.worker_id
         self.poller = zmq.Poller()
-        self.poller.register(self.socket, zmq.POLLIN|zmq.POLLOUT)
+        self.poller.register(self.socket, zmq.POLLIN | zmq.POLLOUT)
         self.redis_server = redis.from_url(redis_url)
-        self.controllers = {} # Keep a dict of timestamps when you last spoke to controllers
+        self.controllers = {}  # Keep a dict of timestamps when you last spoke to controllers
         self.check_controllers()
         self.last_wrm = 0
         self.start_time = time.time()
-        self.logger = bqueryd.logger.getChild('worker '+self.worker_id)
+        self.logger = bqueryd.logger.getChild('worker ' + self.worker_id)
         self.logger.setLevel(loglevel)
         self.msg_count = 0
 
     def send(self, addr, msg):
         try:
-            self.socket.send_multipart([addr, msg.to_json()])
+            if 'data' in msg:
+                data = msg['data']
+                del msg['data']
+                self.socket.send_multipart([addr, msg.to_json(), data])
+            else:    
+                self.socket.send_multipart([addr, msg.to_json()])
         except zmq.ZMQError, ze:
             self.logger.critical("Problem with %s: %s" % (addr, ze))
 
@@ -101,7 +107,7 @@ class WorkerNode(object):
         return wrm
 
     def heartbeat(self):
-        time.sleep(0.001) # to prevent too tight loop
+        time.sleep(0.001)  # to prevent too tight loop
         since_last_wrm = time.time() - self.last_wrm
         if since_last_wrm > WRM_DELAY:
             self.check_controllers()
@@ -178,6 +184,9 @@ class WorkerNode(object):
             self.send(controller, msg)
 
     def handle_calc(self, msg):
+        tmp_dir = tempfile.mkdtemp(prefix='result_')
+        buf_file = tempfile.mktemp(prefix='tar_')
+
         args, kwargs = msg.get_args_kwargs()
         self.logger.info('doing calc %s' % args)
         filename = args[0]
@@ -201,7 +210,7 @@ class WorkerNode(object):
             # quickly verify the where_terms_list
             if not ct.where_terms_factorization_check(where_terms_list):
                 # return an empty result because the where terms do not give a result for this ctable
-                msg.add_as_binary('result', pd.DataFrame())
+                msg['data'] = ''
                 return msg
             # else create the boolean array
             bool_arr = ct.where_terms(where_terms_list, cache=True)
@@ -211,25 +220,44 @@ class WorkerNode(object):
             bool_arr = ct.is_in_ordered_subgroups(basket_col=expand_filter_column, bool_arr=bool_arr)
 
         # retrieve & aggregate if needed
+        rm_file_or_dir(tmp_dir)
         if aggregate:
             # aggregate by groupby parameters
-            result_ctable = ct.groupby(groupby_col_list, aggregation_list, bool_arr=bool_arr)
-            buf = result_ctable.todataframe()
+            result_ctable = ct.groupby(groupby_col_list, aggregation_list, bool_arr=bool_arr,
+                                       rootdir=tmp_dir)
         else:
             # direct result from the ctable
             column_list = groupby_col_list + [x[0] for x in aggregation_list]
             if bool_arr is not None:
-                result_ctable = bcolz.fromiter(ct[column_list].where(bool_arr), ct[column_list].dtype, sum(bool_arr))
+                result_ctable = bcolz.fromiter(ct[column_list].where(bool_arr), ct[column_list].dtype, sum(bool_arr),
+                                               rootdir=tmp_dir, mode='w')
             else:
-                result_ctable = bcolz.fromiter(ct[column_list], ct[column_list].dtype, ct.len)
-            buf = result_ctable[column_list].todataframe()
+                result_ctable = bcolz.fromiter(ct[column_list], ct[column_list].dtype, ct.len,
+                                               rootdir=tmp_dir, mode='w')
 
-        # clean up temporary files and memory objects
+        # *** clean up temporary files and memory objects
+        # filter
+        del bool_arr
+
+        # input
+        ct.free_cachemem()
         ct.clean_tmp_rootdir()
         del ct
-        del result_ctable
 
-        msg.add_as_binary('result', buf)
+        # save result to archive
+        result_ctable.flush()
+        result_ctable.free_cachemem()
+        with tarfile.open(buf_file, mode='w') as archive:
+            archive.add(tmp_dir, arcname=os.path.basename(tmp_dir))
+        del result_ctable
+        rm_file_or_dir(tmp_dir)
+
+        # create message
+        with open(buf_file, 'r') as file:
+            # add result to message
+            msg['data'] = file.read()
+        rm_file_or_dir(buf_file)
+
         return msg
 
     def file_downloader_progress(self, ticket, filename, progress):
@@ -259,7 +287,7 @@ class WorkerNode(object):
                 os.mkdir(ticket_path)
             except OSError, ose:
                 if ose == errno.EEXIST:
-                    pass # different workers might try to create the same directory at _just_ the same time causing the previous check to fail
+                    pass  # different workers might try to create the same directory at _just_ the same time causing the previous check to fail
         temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
         if os.path.exists(temp_path):
             self.logger.info("%s exists, skipping download" % temp_path)
@@ -281,7 +309,7 @@ class WorkerNode(object):
                         buf = True
                         progress = 0
                         while buf:
-                            buf = fin.read(pow(2,20) * 16) # Use a bigger buffer
+                            buf = fin.read(pow(2, 20) * 16)  # Use a bigger buffer
                             fout.write(buf)
                             progress += len(buf)
                             self.file_downloader_progress(ticket, fileurl, size)
@@ -326,10 +354,9 @@ class WorkerNode(object):
         for node_filename_slot in self.redis_server.hgetall('ticket_' + ticket):
             if node_filename_slot.startswith(self.node_name):
                 self.logger.debug('Removing ticket_%s %s', ticket, node_filename_slot)
-                self.redis_server.hdel('ticket_'+ticket, node_filename_slot)
+                self.redis_server.hdel('ticket_' + ticket, node_filename_slot)
 
         shutil.rmtree(ticket_path, ignore_errors=True)
-
 
     def handle(self, msg):
         if msg.isa('kill'):
@@ -344,10 +371,13 @@ class WorkerNode(object):
                 self.logger.setLevel(loglevel)
                 self.logger.info("Set loglevel to %s" % loglevel)
             return
+        elif msg.isa('readfile'):
+            args, kwargs = msg.get_args_kwargs()
+            msg['data'] = open(args[0]).read()
         elif msg.isa('sleep'):
             args, kwargs = msg.get_args_kwargs()
             time.sleep(float(args[0]))
-            snore = 'z'*random.randint(1,20)
+            snore = 'z' * random.randint(1, 20)
             self.logger.debug(snore)
             msg.add_as_binary('result', snore)
         elif msg.isa('download'):
