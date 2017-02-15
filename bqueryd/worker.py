@@ -17,6 +17,7 @@ import random
 import bqueryd
 import socket
 import smart_open
+import resource
 from ssl import SSLError
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage
@@ -28,6 +29,7 @@ POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, thi
 WRM_DELAY = 20  # how often in seconds to send a WorkerRegisterMessage
 MAX_MESSAGES = 200  # after how many messages should the controller be restarted
 MAX_MESSAGES = int(MAX_MESSAGES + 0.30 * MAX_MESSAGES * (random.random() - 0.5))  # randomize actual amount
+MAX_MEMORY = pow(2,20) # Max memory of 1GB
 bcolz.set_nthreads(1)
 
 
@@ -133,12 +135,6 @@ class WorkerNode(object):
         sender, msg_buf = tmp
         msg = msg_factory(msg_buf)
 
-        if msg.isa('groupby'):
-            self.msg_count += 1
-            if self.msg_count > MAX_MESSAGES:
-                self.logger.critical('MAX_MESSAGES of %s reached, restarting' % MAX_MESSAGES)
-                self.running = False
-
         data = self.controllers.get(sender)
         if not data:
             self.logger.critical('Received a msg from %s - this is an unknown sender' % sender)
@@ -161,6 +157,18 @@ class WorkerNode(object):
             self.logger.exception(tmp['payload'])
         if tmp:
             self.send(sender, tmp)
+
+        if msg.isa('groupby'):
+            self.msg_count += 1
+            if self.msg_count > MAX_MESSAGES:
+                self.logger.critical('MAX_MESSAGES of %s reached, restarting' % MAX_MESSAGES)
+                self.running = False
+
+            maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            if maxrss / MAX_MEMORY > 0:
+                self.logger.critical('Memory usage according to ru_maxrss of %s is higher than 1GB, restarting' % maxrss)
+                self.running = False
+
 
         self.send_to_all(DoneMessage())  # Send a DoneMessage to all controllers, this flags you as 'Done'. Duh
 
