@@ -5,24 +5,20 @@ import binascii
 import traceback
 import random
 import os
-import gc
-import shutil
 import tarfile
 import tempfile
 import socket
-import pandas as pd
 import redis
 import bqueryd
 from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, \
-    BusyMessage, DoneMessage, StopMessage
+    BusyMessage, DoneMessage, StopMessage, TicketDoneMessage
 from bqueryd.tool import rm_file_or_dir
 from bqueryd.util import get_my_ip, bind_to_random_port
 
 POLLING_TIMEOUT = 500  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
 DEAD_WORKER_TIMEOUT = 60  # time in seconds that we wait for a worker to respond before being removed
-HEARTBEAT_INTERVAL = 5  # time in seconds between doing heartbeats
-MIN_CALCWORKER_COUNT = 0.8  # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
-DOWNLOAD_MSG_INTERVAL = 60  # How often in seconds to repeat sending download messages to controller nodes for files.
+HEARTBEAT_INTERVAL = 2  # time in seconds between doing heartbeats
+MIN_CALCWORKER_COUNT = 0.1  # percentage of workers that should ONLY do calcs and never do downloads to prevent download swamping
 RUNFILES_LOCATION = '/srv/'  # Location to write a .pid and .address file
 
 
@@ -109,7 +105,6 @@ class ControllerNode(object):
     def heartbeat(self):
         if time.time() - self.last_heartbeat > HEARTBEAT_INTERVAL:
             self.connect_to_others()
-            self.check_downloads()
             self.last_heartbeat = time.time()
 
     def find_free_worker(self, needs_local=False, filename=None):
@@ -118,6 +113,10 @@ class ControllerNode(object):
         free_local_workers = []
 
         for worker_id, worker in self.worker_map.items():
+            # ignore downloader workers
+            if worker.get('workertype') == 'download':
+                continue
+
             if worker.get('busy'):
                 continue
 
@@ -126,8 +125,6 @@ class ControllerNode(object):
 
             free_workers.append(worker_id)
             if needs_local and worker.get('node') != self.node_name:
-                continue
-            if needs_local and worker.get('reserved_4_calc'):
                 continue
             if worker.get('node') == self.node_name:
                 free_local_workers.append(worker_id)
@@ -141,21 +138,6 @@ class ControllerNode(object):
         if free_local_workers:
             return random.choice(free_local_workers)
         return random.choice(free_workers)
-
-    def calc_num_reserved_workers(self):
-        # We want to reserve a number of local workers to not take part in 'local' operation like file downloads
-        # to prevent 'swamping' of the controller with file download messages and never allowing calc messages to be
-        # let through
-        reserved_count = 0
-        local_workers = 0
-        for worker_id, worker in self.worker_map.items():
-            if worker.get('node', '?') == self.node_name:
-                local_workers += 1
-                if worker.get('reserved_4_calc') == True:
-                    reserved_count += 1
-        if local_workers < 1:
-            return 0
-        return float(reserved_count) / local_workers
 
     def process_sink_results(self):
         while self.rpc_results:
@@ -337,11 +319,7 @@ class ControllerNode(object):
             self.worker_map[worker_id]['node'] = msg.get('node', '...')
             self.worker_map[worker_id]['uptime'] = msg.get('uptime', 0)
             self.worker_map[worker_id]['pid'] = msg.get('pid', '?')
-            if self.worker_map[worker_id]['node'] == self.node_name:
-                num_reserved = self.calc_num_reserved_workers()
-                if num_reserved <= MIN_CALCWORKER_COUNT:
-                    self.logger.debug('Making reserved = %s' % num_reserved)
-                    self.worker_map[worker_id]['reserved_4_calc'] = True
+            self.worker_map[worker_id]['workertype'] = msg.get('workertype', '?')
             return
 
         if msg.isa(BusyMessage):
@@ -358,9 +336,25 @@ class ControllerNode(object):
             self.remove_worker(worker_id)
             return
 
+        if msg.isa(TicketDoneMessage):
+            # Go through download tickets and see if there are any local RPCs waiting for it
+            # Check the ticket in this number, if it is in the self.rpc_segments[ticket] of this controller
+            # there is a RPC call waiting for it, so also answer that one
+
+            ticket = msg.get('ticket')
+            if ticket in self.rpc_segments:
+                msg2 = self.rpc_segments[ticket]
+                if 'token' in msg2:
+                    # TODO Consider passing in some extra information to this ticket so the worker
+                    # that did the downloading can pass in diagnostics etc.
+                    self.rpc_results.append(msg2)
+                del self.rpc_segments[ticket]
+            return
+
+
         if 'token' in msg:
-            # A message might have been passed on to a worker for processing and needs to be returned to the relevant caller
-            # so it goes in the rpc_results list
+            # A message might have been passed on to a worker for processing and needs to be returned to
+            #  the relevant caller so it goes in the rpc_results list
             self.rpc_results.append(msg)
 
     def handle_rpc(self, sender, msg):
@@ -450,10 +444,10 @@ class ControllerNode(object):
 
             for node in nodes:
                 # A progress slot contains a timestamp_filesize
-                progress_slot = '%s_%s' % (0, 0)  # start the progress with a timestamp of loooon ago
+                progress_slot = '%s_%s' % (0, -1)  # start the progress with a timestamp of loooon ago
                 node_filename_slot = '%s_%s' % (node, filename)
                 self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
-        self.check_downloads()
+
         if wait:
             msg.add_as_binary('result', ticket)
             self.rpc_segments[ticket] = msg
@@ -543,73 +537,6 @@ class ControllerNode(object):
         for worker_id, worker in self.worker_map.items():
             if (now - worker.get('last_seen', now)) > DEAD_WORKER_TIMEOUT:
                 self.remove_worker(worker_id)
-
-    def check_downloads(self):
-        # Note, the files being downloaded are stored per key on filename,
-        # Yet files are grouped as being inside a ticket for downloading at the same time
-        # this done so that a group of files can be synchrionized in downloading
-        # when called from rpc.download(filenames=[...]
-
-        download_tickets = self.redis_server.hgetall(bqueryd.REDIS_DOWNLOAD_FILES_KEY)
-        movebcolz_list = set()
-        for filename, ticket in download_tickets.items():
-            ticket_details = self.redis_server.hgetall('ticket_' + ticket)
-            # If this ticket is empty, all the movebcolz for every node has been done, and the
-            # filename can be released
-            if not ticket_details:
-                self.redis_server.hdel(bqueryd.REDIS_DOWNLOAD_FILES_KEY, filename)
-                continue
-
-            in_progress_count = 0
-            for node_filename_slot, progress_slot in ticket_details.items():
-                tmp = node_filename_slot.split('_')
-                if len(tmp) < 2:
-                    self.logger.critical("Bogus node_filename_slot %s", node_filename_slot)
-                    continue
-                node = tmp[0]
-                filename = '_'.join(tmp[1:])
-
-                tmp = progress_slot.split('_')
-                if len(tmp) != 2:
-                    self.logger.critical("Bogus progress_slot %s", progress_slot)
-                    continue
-                timestamp, progress = float(tmp[0]), tmp[1]
-
-                # If every progress slot for this ticket is DONE, we can consider the whole ticket done
-                if progress == 'DONE':
-                    continue
-
-                in_progress_count += 1
-
-                if node != self.node_name:
-                    continue
-
-
-                if (time.time() - timestamp) > DOWNLOAD_MSG_INTERVAL:
-                    # Send a download message for this file to a local worker
-                    msg = Message({'payload': 'download',
-                                   'worker_id': '__needs_local__',
-                                   'fileurl': filename,
-                                   'ticket': ticket})
-                    self.worker_out_messages[None].append(msg)
-                    progress_slot = '%s_%s' % (time.time(), -1)
-                    self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
-
-            if in_progress_count == 0:  # every progress for this slot is set to DONE
-                movebcolz_list.add(ticket)
-
-        for ticket in movebcolz_list:
-            self.logger.debug('Download done %s, sending movebcolz message' % ticket)
-            msg = Message({'payload': 'movebcolz', 'ticket': ticket})
-            msg['worker_id'] = '__needs_local__'
-            self.worker_out_messages[None].append(msg)
-            # Check the ticket in this number, if it is in the self.rpc_segments[ticket] of this controller
-            # there is a RPC call waiting for it, so also answer that one
-            if ticket in self.rpc_segments:
-                msg = self.rpc_segments[ticket]
-                if 'token' in msg:
-                    self.rpc_results.append(msg)
-                del self.rpc_segments[ticket]
 
     def go(self):
         self.logger.info('Starting #####################################')

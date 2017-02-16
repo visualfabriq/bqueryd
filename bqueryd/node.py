@@ -20,6 +20,8 @@ if __name__ == '__main__':
         bqueryd.ControllerNode(redis_url=redis_url, loglevel=loglevel).go()
     elif 'worker' in sys.argv:
         bqueryd.WorkerNode(redis_url=redis_url, loglevel=loglevel).go()
+    elif 'downloader' in sys.argv:
+        bqueryd.DownloaderNode(redis_url=redis_url, loglevel=loglevel).go()
     else:
         if len(sys.argv) > 1 and sys.argv[1].startswith('tcp:'):
             rpc = bqueryd.RPC(address=sys.argv[1], redis_url=redis_url, loglevel=loglevel)

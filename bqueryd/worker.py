@@ -1,5 +1,4 @@
 import os
-import errno
 import time
 import zmq
 import bquery
@@ -7,33 +6,35 @@ import bcolz
 import traceback
 import tempfile
 import tarfile
-import zipfile
-import shutil
-import boto
 import redis
 import binascii
 import logging
 import random
 import bqueryd
 import socket
-import smart_open
 import resource
+import boto
+import smart_open
+import zipfile
 from ssl import SSLError
+import shutil
+import errno
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
-    DoneMessage
+    DoneMessage, TicketDoneMessage
 from bqueryd.tool import rm_file_or_dir
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
 WRM_DELAY = 20  # how often in seconds to send a WorkerRegisterMessage
-MAX_MESSAGES = 200  # after how many messages should the controller be restarted
+MAX_MESSAGES = 2000  # after how many messages should the controller be restarted
 MAX_MESSAGES = int(MAX_MESSAGES + 0.30 * MAX_MESSAGES * (random.random() - 0.5))  # randomize actual amount
 MAX_MEMORY = pow(2,20) # Max memory of 1GB
+DOWNLOAD_DELAY = 2 # how often in seconds to check for downloads
 bcolz.set_nthreads(1)
 
 
-class WorkerNode(object):
+class WorkerBase(object):
     def __init__(self, data_dir=bqueryd.DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
             raise Exception("Datadir %s is not a valid difrectory" % data_dir)
@@ -87,11 +88,13 @@ class WorkerNode(object):
 
     def check_datafiles(self):
         has_new_files = False
+        replacement_data_files = set()
         for data_file in [filename for filename in os.listdir(self.data_dir) if
                           filename.endswith(DATA_FILE_EXTENSION) or filename.endswith(DATA_SHARD_FILE_EXTENSION)]:
             if data_file not in self.data_files:
-                self.data_files.add(data_file)
                 has_new_files = True
+            replacement_data_files.add(data_file)
+        self.data_files = replacement_data_files
         if len(self.data_files) < 1:
             self.logger.debug('Data directory %s has no files like %s or %s' % (
                 self.data_dir, DATA_FILE_EXTENSION, DATA_SHARD_FILE_EXTENSION))
@@ -107,6 +110,7 @@ class WorkerNode(object):
         wrm['uptime'] = int(time.time() - self.start_time)
         wrm['msg_count'] = self.msg_count
         wrm['pid'] = os.getpid()
+        wrm['workertype'] = self.workertype
         return wrm
 
     def heartbeat(self):
@@ -158,18 +162,6 @@ class WorkerNode(object):
         if tmp:
             self.send(sender, tmp)
 
-        if msg.isa('groupby'):
-            self.msg_count += 1
-            if self.msg_count > MAX_MESSAGES:
-                self.logger.critical('MAX_MESSAGES of %s reached, restarting' % MAX_MESSAGES)
-                self.running = False
-
-            maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            if maxrss / MAX_MEMORY > 0:
-                self.logger.critical('Memory usage according to ru_maxrss of %s is higher than 1GB, restarting' % maxrss)
-                self.running = False
-
-
         self.send_to_all(DoneMessage())  # Send a DoneMessage to all controllers, this flags you as 'Done'. Duh
 
     def go(self):
@@ -192,7 +184,50 @@ class WorkerNode(object):
         for controller in self.controllers:
             self.send(controller, msg)
 
-    def handle_calc(self, msg):
+    def handle(self, msg):
+        if msg.isa('kill'):
+            self.running = False
+            return
+        elif msg.isa('info'):
+            msg = self.prepare_wrm()
+        elif msg.isa('loglevel'):
+            args, kwargs = msg.get_args_kwargs()
+            if args:
+                loglevel = {'info': logging.INFO, 'debug': logging.DEBUG}.get(args[0], logging.INFO)
+                self.logger.setLevel(loglevel)
+                self.logger.info("Set loglevel to %s" % loglevel)
+            return
+        elif msg.isa('readfile'):
+            args, kwargs = msg.get_args_kwargs()
+            msg['data'] = open(args[0]).read()
+        elif msg.isa('sleep'):
+            args, kwargs = msg.get_args_kwargs()
+            time.sleep(float(args[0]))
+            snore = 'z' * random.randint(1, 20)
+            self.logger.debug(snore)
+            msg.add_as_binary('result', snore)
+        else:
+            msg = self.handle_work(msg)
+
+            self.msg_count += 1
+            if self.msg_count > MAX_MESSAGES:
+                self.logger.critical('MAX_MESSAGES of %s reached, restarting' % MAX_MESSAGES)
+                self.running = False
+
+            maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            if maxrss / MAX_MEMORY > 0:
+                self.logger.critical('Memory usage according to ru_maxrss of %s is higher than 1GB, restarting' % maxrss)
+                self.running = False
+
+        return msg
+
+    def handle_work(self, msg):
+        raise NotImplementedError
+
+class WorkerNode(WorkerBase):
+    workertype = 'calc'
+
+    def handle_work(self, msg):
         tmp_dir = tempfile.mkdtemp(prefix='result_')
         buf_file = tempfile.mktemp(prefix='tar_')
 
@@ -269,34 +304,99 @@ class WorkerNode(object):
 
         return msg
 
+class DownloaderNode(WorkerBase):
+    workertype = 'download'
+
+    def __init__(self, *args, **kwargs):
+        super(DownloaderNode, self).__init__(*args, **kwargs)
+        self.last_download_check = 0
+
+    def heartbeat(self):
+        super(DownloaderNode, self).heartbeat()
+        if time.time() - self.last_download_check > DOWNLOAD_DELAY:
+            self.check_downloads()
+
+
+    def check_downloads(self):
+        # Note, the files being downloaded are stored per key on filename,
+        # Yet files are grouped as being inside a ticket for downloading at the same time
+        # this done so that a group of files can be synchrionized in downloading
+        # when called from rpc.download(filenames=[...]
+        self.last_download_check = time.time()
+        self.logger.debug("Checking Redis for download keys in: %s", bqueryd.REDIS_DOWNLOAD_FILES_KEY)
+        download_tickets = self.redis_server.hgetall(bqueryd.REDIS_DOWNLOAD_FILES_KEY)
+        movebcolz_list = set()
+        for filename, ticket in download_tickets.items():
+            ticket_details = self.redis_server.hgetall('ticket_' + ticket)
+            # If this ticket is empty, all the movebcolz for every node has been done, and the
+            # filename can be released
+            if not ticket_details:
+                self.redis_server.hdel(bqueryd.REDIS_DOWNLOAD_FILES_KEY, filename)
+                continue
+
+            in_progress_count = 0
+            for node_filename_slot, progress_slot in ticket_details.items():
+                tmp = node_filename_slot.split('_')
+                if len(tmp) < 2:
+                    self.logger.critical("Bogus node_filename_slot %s", node_filename_slot)
+                    continue
+                node = tmp[0]
+                filename = '_'.join(tmp[1:])
+
+                tmp = progress_slot.split('_')
+                if len(tmp) != 2:
+                    self.logger.critical("Bogus progress_slot %s", progress_slot)
+                    continue
+                timestamp, progress = float(tmp[0]), tmp[1]
+
+                # If every progress slot for this ticket is DONE, we can consider the whole ticket done
+                if progress == 'DONE':
+                    continue
+
+                in_progress_count += 1
+                if node != self.node_name:
+                    continue
+                try:
+                    self.download_file(ticket, filename)
+                except:
+                    self.logger.exception('Problem downloading %s %s', ticket, filename)
+                    self.file_downloader_progress(ticket, filename, 'ERROR')
+
+            if in_progress_count == 0:  # every progress for this slot is set to DONE
+                movebcolz_list.add(ticket)
+
+        for ticket in movebcolz_list:
+            self.logger.info('Download %s done, doing movebcolz' % ticket)
+            try:
+                self.movebcolz(ticket)
+                tdm = TicketDoneMessage({'ticket': ticket})
+                self.send_to_all(tdm)
+            except:
+                self.logger.exception('Problem doing movebcolz %s', ticket)
+                for node_filename_slot in self.redis_server.hgetall('ticket_' + ticket):
+                    if node_filename_slot.startswith(self.node_name):
+                        progress_slot = '%s_ERROR' % time.time()
+                        self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
+
     def file_downloader_progress(self, ticket, filename, progress):
         # A progress slot contains a timestamp_filesize
         progress_slot = '%s_%s' % (time.time(), progress)
         node_filename_slot = '%s_%s' % (self.node_name, filename)
         self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
 
-    def handle_download(self, msg):
-        self.logger.debug('Doing download %s', msg)
-        fileurl = msg.get('fileurl', '')
-        if not fileurl.startswith('s3://'):
-            self.logger.critical("Bogus fileurl for download [%s]", fileurl)
-            return
+    def download_file(self, ticket, fileurl):
         tmp = fileurl[5:].split('/')
-        if len(tmp) < 2:
-            self.logger.critical("Bogus fileurl %s, should be s3://<bucket-name>/filename", fileurl)
-            return
         bucket = tmp[0]
         filename = '/'.join(tmp[1:])
 
-        ticket = msg['ticket']
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
         self.logger.info("Downloading %s s3://%s/%s" % (ticket, bucket, filename))
         if not os.path.exists(ticket_path):
             try:
-                os.mkdir(ticket_path)
+                os.makedirs(ticket_path)
             except OSError, ose:
                 if ose == errno.EEXIST:
-                    pass  # different workers might try to create the same directory at _just_ the same time causing the previous check to fail
+                    pass  # different processes might try to create the same directory at _just_ the same time causing the previous check to fail
         temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
         if os.path.exists(temp_path):
             self.logger.info("%s exists, skipping download" % temp_path)
@@ -338,16 +438,13 @@ class WorkerNode(object):
             self.logger.debug("Downloaded %s" % temp_path)
             if os.path.exists(tmp_filename):
                 os.remove(tmp_filename)
-        msg.add_as_binary('result', temp_path)
         self.logger.debug('Download done %s s3://%s/%s', ticket, bucket, filename)
         self.file_downloader_progress(ticket, fileurl, 'DONE')
 
-        return msg
 
-    def handle_movebcolz(self, msg):
-        # A notification from the controller that all files are downloaded on all nodes, the files in this ticket can be moved into place
-        self.logger.info('movebcolz %s' % msg['ticket'])
-        ticket = msg['ticket']
+    def movebcolz(self, ticket):
+        # A notification from the controller that all files are downloaded on all nodes,
+        # the files in this ticket can be moved into place
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
         if os.path.exists(ticket_path):
             for filename in os.listdir(ticket_path):
@@ -356,7 +453,7 @@ class WorkerNode(object):
                     shutil.rmtree(prod_path, ignore_errors=True)
                 ready_path = os.path.join(ticket_path, filename)
                 self.logger.debug("moving %s %s" % (ready_path, prod_path))
-                os.rename(ready_path, prod_path)
+                shutil.move(ready_path, prod_path)
 
         # Remove all Redis entries for this node and ticket
         # it can't be done per file as we don't have the bucket name from which a file was downloaded
@@ -366,33 +463,3 @@ class WorkerNode(object):
                 self.redis_server.hdel('ticket_' + ticket, node_filename_slot)
 
         shutil.rmtree(ticket_path, ignore_errors=True)
-
-    def handle(self, msg):
-        if msg.isa('kill'):
-            self.running = False
-            return
-        elif msg.isa('info'):
-            msg = self.prepare_wrm()
-        elif msg.isa('loglevel'):
-            args, kwargs = msg.get_args_kwargs()
-            if args:
-                loglevel = {'info': logging.INFO, 'debug': logging.DEBUG}.get(args[0], logging.INFO)
-                self.logger.setLevel(loglevel)
-                self.logger.info("Set loglevel to %s" % loglevel)
-            return
-        elif msg.isa('readfile'):
-            args, kwargs = msg.get_args_kwargs()
-            msg['data'] = open(args[0]).read()
-        elif msg.isa('sleep'):
-            args, kwargs = msg.get_args_kwargs()
-            time.sleep(float(args[0]))
-            snore = 'z' * random.randint(1, 20)
-            self.logger.debug(snore)
-            msg.add_as_binary('result', snore)
-        elif msg.isa('download'):
-            msg = self.handle_download(msg)
-        elif msg.isa('movebcolz'):
-            msg = self.handle_movebcolz(msg)
-        else:
-            msg = self.handle_calc(msg)
-        return msg

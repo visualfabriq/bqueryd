@@ -19,5 +19,5 @@ NODES = ['dqe11', 'dqe12', 'dqe13', 'dqe14', 'dqe15']
 
 from rpc import RPC, RPCError
 from controller import ControllerNode
-from worker import WorkerNode
+from worker import WorkerNode, DownloaderNode
 
