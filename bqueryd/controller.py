@@ -112,13 +112,18 @@ class ControllerNode(object):
             self.check_downloads()
             self.last_heartbeat = time.time()
 
-    def find_free_worker(self, needs_local=False):
+    def find_free_worker(self, needs_local=False, filename=None):
         # Pick a random worker_id to send a message, TODO add some kind of load-balancing
         free_workers = []
         free_local_workers = []
+
         for worker_id, worker in self.worker_map.items():
             if worker.get('busy'):
                 continue
+
+            if filename and (worker_id not in self.files_map.get(filename, [])):
+                continue
+
             free_workers.append(worker_id)
             if needs_local and worker.get('node') != self.node_name:
                 continue
@@ -253,13 +258,14 @@ class ControllerNode(object):
         msg = nextq[0]
         worker_id = msg.get('worker_id')
 
-        # Assumption now is that all workers can serve requests to all files,
-        # TODO We need to change the find_free_worker to take the requested filename into account
+        # Take into account on which worker a filename is available
+        filename = msg.get('filename')
+
         # find a worker that is free
         if worker_id == '__needs_local__':
-            worker_id = self.find_free_worker(needs_local=True)
+            worker_id = self.find_free_worker(needs_local=True, filename=filename)
         elif worker_id is None:
-            worker_id = self.find_free_worker()
+            worker_id = self.find_free_worker(filename=filename)
 
         if not worker_id:
             # self.logger.debug('No free workers at this time')
@@ -479,6 +485,7 @@ class ControllerNode(object):
 
         params = {}
         for filename in filenames:
+            msg['filename'] = filename
             params['args'] = list(args)
             params['args'][0] = filename
             params['kwargs'] = kwargs
