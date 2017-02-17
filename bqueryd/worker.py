@@ -19,6 +19,7 @@ import zipfile
 from ssl import SSLError
 import shutil
 import errno
+import signal
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage, TicketDoneMessage
 from bqueryd.tool import rm_file_or_dir
@@ -56,6 +57,13 @@ class WorkerBase(object):
         self.logger = bqueryd.logger.getChild('worker ' + self.worker_id)
         self.logger.setLevel(loglevel)
         self.msg_count = 0
+        signal.signal(signal.SIGTERM, self.term_signal())
+
+    def term_signal(self):
+        def _signal_handler(signum, frame):
+            self.logger.info("Received TERM signal, stopping.")
+            self.running = False
+        return _signal_handler
 
     def send(self, addr, msg):
         try:
