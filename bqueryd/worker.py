@@ -322,17 +322,15 @@ class DownloaderNode(WorkerBase):
         # Yet files are grouped as being inside a ticket for downloading at the same time
         # this done so that a group of files can be synchrionized in downloading
         # when called from rpc.download(filenames=[...]
+
         self.last_download_check = time.time()
-        self.logger.debug("Checking Redis for download keys in: %s", bqueryd.REDIS_DOWNLOAD_FILES_KEY)
-        download_tickets = self.redis_server.hgetall(bqueryd.REDIS_DOWNLOAD_FILES_KEY)
         movebcolz_list = set()
-        for filename, ticket in download_tickets.items():
-            ticket_details = self.redis_server.hgetall('ticket_' + ticket)
-            # If this ticket is empty, all the movebcolz for every node has been done, and the
-            # filename can be released
-            if not ticket_details:
-                self.redis_server.hdel(bqueryd.REDIS_DOWNLOAD_FILES_KEY, filename)
-                continue
+        tickets = self.redis_server.keys(bqueryd.REDIS_TICKET_KEY_PREFIX + '*')
+
+
+        for ticket_w_prefix in tickets:
+            ticket_details = self.redis_server.hgetall(ticket_w_prefix)
+            ticket = ticket_w_prefix[len(bqueryd.REDIS_TICKET_KEY_PREFIX):]
 
             in_progress_count = 0
             for node_filename_slot, progress_slot in ticket_details.items():
@@ -360,7 +358,9 @@ class DownloaderNode(WorkerBase):
                     self.download_file(ticket, filename)
                 except:
                     self.logger.exception('Problem downloading %s %s', ticket, filename)
-                    self.file_downloader_progress(ticket, filename, 'ERROR')
+                    # Clean up the whole ticket if an error occured
+                    self.remove_ticket(ticket)
+                    break
 
             if in_progress_count == 0:  # every progress for this slot is set to DONE
                 movebcolz_list.add(ticket)
@@ -369,20 +369,18 @@ class DownloaderNode(WorkerBase):
             self.logger.info('Download %s done, doing movebcolz' % ticket)
             try:
                 self.movebcolz(ticket)
+                self.remove_ticket(ticket)
                 tdm = TicketDoneMessage({'ticket': ticket})
                 self.send_to_all(tdm)
             except:
                 self.logger.exception('Problem doing movebcolz %s', ticket)
-                for node_filename_slot in self.redis_server.hgetall('ticket_' + ticket):
-                    if node_filename_slot.startswith(self.node_name):
-                        progress_slot = '%s_ERROR' % time.time()
-                        self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
+                self.remove_ticket(ticket)
 
     def file_downloader_progress(self, ticket, filename, progress):
         # A progress slot contains a timestamp_filesize
         progress_slot = '%s_%s' % (time.time(), progress)
         node_filename_slot = '%s_%s' % (self.node_name, filename)
-        self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
+        self.redis_server.hset(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot, progress_slot)
 
     def download_file(self, ticket, fileurl):
         tmp = fileurl[5:].split('/')
@@ -435,7 +433,7 @@ class DownloaderNode(WorkerBase):
                 shutil.rmtree(temp_path, ignore_errors=True)
             with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
                 myzip.extractall(temp_path)
-            self.logger.debug("Downloaded %s" % temp_path)
+            self.logger.debug("Downloaded %s" % tmp_filename)
             if os.path.exists(tmp_filename):
                 os.remove(tmp_filename)
         self.logger.debug('Download done %s s3://%s/%s', ticket, bucket, filename)
@@ -452,14 +450,15 @@ class DownloaderNode(WorkerBase):
                 if os.path.exists(prod_path):
                     shutil.rmtree(prod_path, ignore_errors=True)
                 ready_path = os.path.join(ticket_path, filename)
-                self.logger.debug("moving %s %s" % (ready_path, prod_path))
+                self.logger.debug("Moving %s %s" % (ready_path, prod_path))
                 shutil.move(ready_path, prod_path)
 
+    def remove_ticket(self, ticket):
         # Remove all Redis entries for this node and ticket
         # it can't be done per file as we don't have the bucket name from which a file was downloaded
-        for node_filename_slot in self.redis_server.hgetall('ticket_' + ticket):
+        for node_filename_slot in self.redis_server.hgetall(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket):
             if node_filename_slot.startswith(self.node_name):
                 self.logger.debug('Removing ticket_%s %s', ticket, node_filename_slot)
-                self.redis_server.hdel('ticket_' + ticket, node_filename_slot)
-
+                self.redis_server.hdel(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot)
+        ticket_path = os.path.join(bqueryd.INCOMING, ticket)
         shutil.rmtree(ticket_path, ignore_errors=True)

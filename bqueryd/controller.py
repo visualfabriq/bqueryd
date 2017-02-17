@@ -263,6 +263,7 @@ class ControllerNode(object):
     def handle_in(self):
         self.msg_count_in += 1
         data = self.socket.recv_multipart()
+        binary, sender = None, None # initialise outside for edge cases
         if len(data) == 3:
             if data[1] == '': # This is a RPC call from a zmq.REQ socket
                 sender, _blank, msg_buf = data
@@ -271,7 +272,6 @@ class ControllerNode(object):
             sender, msg_buf, binary = data
         elif len(data) == 2:  # This is an internode call from another zmq.ROUTER, a Controller or Worker
             sender, msg_buf = data
-            binary = None
         msg = msg_factory(msg_buf)
         if binary:
             msg['data'] = binary
@@ -427,15 +427,8 @@ class ControllerNode(object):
         # Turn filenames into s3 URLs
         filenames = ['s3://%s/%s' % (bucket, filename) for filename in filenames]
 
-        # Check each filename for a ticket and see if is currently being downloaded...
-        download_tickets = self.redis_server.hgetall(bqueryd.REDIS_DOWNLOAD_FILES_KEY)
-        filenames = [x for x in filenames if x not in download_tickets]
-        if not filenames:
-            return "All files are currently being downloaded"
-
         ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
         for filename in filenames:
-            self.redis_server.hset(bqueryd.REDIS_DOWNLOAD_FILES_KEY, filename, ticket)
 
             # get all node names from others + self
             # TODO if the download happens to start when you are disconnected from others this is an issue...
@@ -446,7 +439,7 @@ class ControllerNode(object):
                 # A progress slot contains a timestamp_filesize
                 progress_slot = '%s_%s' % (0, -1)  # start the progress with a timestamp of loooon ago
                 node_filename_slot = '%s_%s' % (node, filename)
-                self.redis_server.hset('ticket_' + ticket, node_filename_slot, progress_slot)
+                self.redis_server.hset(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot, progress_slot)
 
         if wait:
             msg.add_as_binary('result', ticket)
@@ -539,7 +532,7 @@ class ControllerNode(object):
                 self.remove_worker(worker_id)
 
     def go(self):
-        self.logger.info('Starting #####################################')
+        self.logger.info('[#############################>. Starting .<#############################]')
 
         while self.is_running:
             try:
