@@ -414,36 +414,39 @@ class DownloaderNode(WorkerBase):
             k = s3_bucket.get_key(filename, validate=False)
             k.open()
             size = k.size
-            fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
+            try:
+                fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
 
-            # See: https://github.com/RaRe-Technologies/smart_open/commit/a751b7575bfc5cc277ae176cecc46dbb109e47a4
-            # Sometime we get timeout errors on the SSL connections
-            for x in range(3):
-                try:
-                    with smart_open.smart_open(k) as fin, open(tmp_filename, 'w') as fout:
-                        buf = True
-                        progress = 0
-                        while buf:
-                            buf = fin.read(pow(2, 20) * 16)  # Use a bigger buffer
-                            fout.write(buf)
-                            progress += len(buf)
-                            self.file_downloader_progress(ticket, fileurl, size)
-                    break
-                except SSLError, e:
-                    if x == 2:
-                        raise e
-                    else:
-                        pass
+                # See: https://github.com/RaRe-Technologies/smart_open/commit/a751b7575bfc5cc277ae176cecc46dbb109e47a4
+                # Sometime we get timeout errors on the SSL connections
+                for x in range(3):
+                    try:
+                        with smart_open.smart_open(k) as fin:
+                            buf = True
+                            progress = 0
+                            while buf:
+                                buf = fin.read(pow(2, 20) * 16)  # Use a bigger buffer
+                                os.write(fd, buf)
+                                progress += len(buf)
+                                self.file_downloader_progress(ticket, fileurl, size)
+                        break
+                    except SSLError, e:
+                        if x == 2:
+                            raise e
+                        else:
+                            pass
 
-            # unzip the tmp file to the filename
-            # if temp_path already exists, first remove it.
-            if os.path.exists(temp_path):
-                shutil.rmtree(temp_path, ignore_errors=True)
-            with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
-                myzip.extractall(temp_path)
-            self.logger.debug("Downloaded %s" % tmp_filename)
-            if os.path.exists(tmp_filename):
-                os.remove(tmp_filename)
+                # unzip the tmp file to the filename
+                # if temp_path already exists, first remove it.
+                if os.path.exists(temp_path):
+                    shutil.rmtree(temp_path, ignore_errors=True)
+                with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
+                    myzip.extractall(temp_path)
+                self.logger.debug("Downloaded %s" % tmp_filename)
+            finally:
+                if os.path.exists(tmp_filename):
+                    os.remove(tmp_filename)
+                os.close(fd)
         self.logger.debug('Download done %s s3://%s/%s', ticket, bucket, filename)
         self.file_downloader_progress(ticket, fileurl, 'DONE')
 
