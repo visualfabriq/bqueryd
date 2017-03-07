@@ -169,11 +169,13 @@ class ControllerNode(object):
 
                 # write result to a temp file
                 if result_file:
-                    tmp_file = tempfile.mktemp(prefix='sub_')
-                    with open(tmp_file, 'w') as file:
-                        file.write(result_file)
+                    tmp_file_fd, tmp_file = tempfile.mkstemp(prefix='sub_')
+                    os.write(tmp_file_fd, result_file)
                 else:
-                    tmp_file = None
+                    tmp_file = tmp_file_fd = None
+                if tmp_file_fd:
+                    os.close(tmp_file_fd)
+
 
                 del result_file
                 original_rpc['results'][filename] = tmp_file
@@ -183,13 +185,16 @@ class ControllerNode(object):
                     # TODO as soon as any workers gives an error abort the whole enchilada
 
                     # if finished, aggregate the result to a combined "tarfile of tarfiles"
-                    tar_file = tempfile.mktemp(prefix='main_')
+
+                    tar_file_fd, tar_file = tempfile.mkstemp(prefix='main_')
+                    os.close(tar_file_fd)
                     with tarfile.open(tar_file, mode='w') as archive:
                         for filename, result_file in original_rpc['results'].items():
                             if result_file is not None:
                                 archive.add(result_file, arcname=filename)
                                 # clean temp file
                                 rm_file_or_dir(result_file)
+
 
                     # We have received all the segment, send a reply to RPC caller
                     del msg
