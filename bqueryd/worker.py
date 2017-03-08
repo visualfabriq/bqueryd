@@ -237,7 +237,8 @@ class WorkerNode(WorkerBase):
 
     def handle_work(self, msg):
         tmp_dir = tempfile.mkdtemp(prefix='result_')
-        buf_file = tempfile.mktemp(prefix='tar_')
+        buf_file_fd, buf_file = tempfile.mkstemp(prefix='tar_')
+        os.close(buf_file_fd)
 
         args, kwargs = msg.get_args_kwargs()
         self.logger.info('doing calc %s' % args)
