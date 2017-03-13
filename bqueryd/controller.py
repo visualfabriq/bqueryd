@@ -442,7 +442,7 @@ class ControllerNode(object):
 
             for node in nodes:
                 # A progress slot contains a timestamp_filesize
-                progress_slot = '%s_%s' % (0, -1)  # start the progress with a timestamp of loooon ago
+                progress_slot = '%s_%s' % (time.time()-60, -1)  # give the slot a timestamp of now -1 minute so we can see when it was created
                 node_filename_slot = '%s_%s' % (node, filename)
                 self.redis_server.hset(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot, progress_slot)
 
