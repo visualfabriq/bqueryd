@@ -410,6 +410,18 @@ class DownloaderNode(WorkerBase):
             self.logger.info("%s exists, skipping download" % temp_path)
             self.file_downloader_progress(ticket, fileurl, 'DONE')
         else:
+            # acquire a lock for this node_filename
+            lock_key = bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX + self.node_name + fileurl
+            timeout = time.time() + bqueryd.REDIS_DOWNLOAD_LOCK_DURATION # 30 minutes timeout from now
+            exists = self.redis_server.setnx(lock_key, timeout)
+            if exists:
+                self.logger.debug('Lock %s exists, skipping this download', lock_key)
+                timeout = float(self.redis_server.get(lock_key))
+                if time.time() > timeout:
+                    self.redis_server.delete(lock_key)
+                    self.logger.debug('Lock %s timeout, deleting it', lock_key)
+                return
+
             # get file from S3
             s3_conn = boto.connect_s3()
             s3_bucket = s3_conn.get_bucket(bucket, validate=False)
@@ -449,11 +461,24 @@ class DownloaderNode(WorkerBase):
                 if os.path.exists(tmp_filename):
                     os.remove(tmp_filename)
                 os.close(fd)
+                self.redis_server.delete(lock_key)
         self.logger.debug('Download done %s s3://%s/%s', ticket, bucket, filename)
         self.file_downloader_progress(ticket, fileurl, 'DONE')
 
 
     def movebcolz(self, ticket):
+        lock_key = bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX + ticket
+        timeout = time.time() + 30  # should not take more than 30 seconds to move a directory
+        exists = self.redis_server.setnx(lock_key, timeout)
+        if exists:
+            self.logger.debug('Lock %s exists, skipping this movebcolz', lock_key)
+            timeout = float(self.redis_server.get(lock_key))
+            if time.time() > timeout:
+                self.redis_server.delete(lock_key)
+                self.logger.debug('Lock %s timeout for movebcolz, deleting it', lock_key)
+            return
+
+
         # A notification from the controller that all files are downloaded on all nodes,
         # the files in this ticket can be moved into place
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
