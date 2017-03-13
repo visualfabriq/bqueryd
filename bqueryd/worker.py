@@ -365,6 +365,7 @@ class DownloaderNode(WorkerBase):
                     continue
                 try:
                     self.download_file(ticket, filename)
+                    break # break out of the loop so we don't end up staying in a large loop for giant tickets
                 except:
                     self.logger.exception('Problem downloading %s %s', ticket, filename)
                     # Clean up the whole ticket if an error occured
