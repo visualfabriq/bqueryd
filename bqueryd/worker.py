@@ -342,7 +342,10 @@ class DownloaderNode(WorkerBase):
             ticket = ticket_w_prefix[len(bqueryd.REDIS_TICKET_KEY_PREFIX):]
 
             in_progress_count = 0
-            for node_filename_slot, progress_slot in ticket_details.items():
+            ticket_details_items = ticket_details.items()
+            random.shuffle(ticket_details_items)
+
+            for node_filename_slot, progress_slot in ticket_details_items:
                 tmp = node_filename_slot.split('_')
                 if len(tmp) < 2:
                     self.logger.critical("Bogus node_filename_slot %s", node_filename_slot)
