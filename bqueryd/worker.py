@@ -378,8 +378,14 @@ class DownloaderNode(WorkerBase):
         for ticket in movebcolz_list:
             self.logger.info('Download %s done, doing movebcolz' % ticket)
             try:
-                self.movebcolz(ticket)
-                self.remove_ticket(ticket)
+                lock_key = '%s_%s_%s' % (bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX, self.node_name, ticket)
+                timeout = time.time() + 30  # should not take more than 30 seconds to move a directory
+                exists = self.create_lock(lock_key, timeout)
+                if not exists:
+                    self.movebcolz(ticket)
+                    self.remove_ticket(ticket)
+                    self.redis_server.delete(lock_key)
+
                 tdm = TicketDoneMessage({'ticket': ticket})
                 self.send_to_all(tdm)
             except:
@@ -413,13 +419,8 @@ class DownloaderNode(WorkerBase):
             # acquire a lock for this node_filename
             lock_key = bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX + self.node_name + fileurl
             timeout = time.time() + bqueryd.REDIS_DOWNLOAD_LOCK_DURATION # 30 minutes timeout from now
-            exists = self.redis_server.setnx(lock_key, timeout)
+            exists = self.create_lock(lock_key, timeout)
             if exists:
-                self.logger.debug('Lock %s exists, skipping this download', lock_key)
-                timeout = float(self.redis_server.get(lock_key))
-                if time.time() > timeout:
-                    self.redis_server.delete(lock_key)
-                    self.logger.debug('Lock %s timeout, deleting it', lock_key)
                 return
 
             # get file from S3
@@ -466,19 +467,18 @@ class DownloaderNode(WorkerBase):
         self.file_downloader_progress(ticket, fileurl, 'DONE')
 
 
-    def movebcolz(self, ticket):
-        lock_key = bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX + ticket
-        timeout = time.time() + 30  # should not take more than 30 seconds to move a directory
+    def create_lock(self, lock_key, timeout):
+        # This is a good candidate for a method decorator.. ;-)
         exists = self.redis_server.setnx(lock_key, timeout)
         if exists:
-            self.logger.debug('Lock %s exists, skipping this movebcolz', lock_key)
+            self.logger.debug('Lock %s exists', lock_key)
             timeout = float(self.redis_server.get(lock_key))
             if time.time() > timeout:
                 self.redis_server.delete(lock_key)
-                self.logger.debug('Lock %s timeout for movebcolz, deleting it', lock_key)
-            return
+                self.logger.debug('Lock %s timeout, deleting it', lock_key)
+        return exists
 
-
+    def movebcolz(self, ticket):
         # A notification from the controller that all files are downloaded on all nodes,
         # the files in this ticket can be moved into place
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
