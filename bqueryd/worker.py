@@ -376,18 +376,19 @@ class DownloaderNode(WorkerBase):
                 movebcolz_list.add(ticket)
 
         for ticket in movebcolz_list:
-            self.logger.info('Download %s done, doing movebcolz' % ticket)
             try:
-                lock_key = '%s_%s_%s' % (bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX, self.node_name, ticket)
-                timeout = time.time() + 30  # should not take more than 30 seconds to move a directory
-                exists = self.create_lock(lock_key, timeout)
-                if not exists:
+                lock_key = '%s%s_%s' % (bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX, self.node_name, ticket)
+                lock = self.redis_server.lock(lock_key, timeout=30)
+                if lock.acquire(False):
+                    self.logger.info('Download %s done, doing movebcolz' % ticket)
                     self.movebcolz(ticket)
                     self.remove_ticket(ticket)
-                    self.redis_server.delete(lock_key)
+                    lock.release()
 
-                tdm = TicketDoneMessage({'ticket': ticket})
-                self.send_to_all(tdm)
+                    tdm = TicketDoneMessage({'ticket': ticket})
+                    self.send_to_all(tdm)
+                else:
+                    self.logger.debug('Movebcolz locked %s', lock_key)
             except:
                 self.logger.exception('Problem doing movebcolz %s', ticket)
                 self.remove_ticket(ticket)
@@ -402,9 +403,7 @@ class DownloaderNode(WorkerBase):
         tmp = fileurl[5:].split('/')
         bucket = tmp[0]
         filename = '/'.join(tmp[1:])
-
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
-        self.logger.info("Downloading %s s3://%s/%s" % (ticket, bucket, filename))
         if not os.path.exists(ticket_path):
             try:
                 os.makedirs(ticket_path)
@@ -418,11 +417,13 @@ class DownloaderNode(WorkerBase):
         else:
             # acquire a lock for this node_filename
             lock_key = bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX + self.node_name + fileurl
-            timeout = time.time() + bqueryd.REDIS_DOWNLOAD_LOCK_DURATION # 30 minutes timeout from now
-            exists = self.create_lock(lock_key, timeout)
-            if exists:
+            lock = self.redis_server.lock(lock_key, timeout=bqueryd.REDIS_DOWNLOAD_LOCK_DURATION)
+
+            if not lock.acquire(False):
+                self.logger.debug('Could not aquire lock %s', lock_key)
                 return
 
+            self.logger.info("Downloading %s s3://%s/%s" % (ticket, bucket, filename))
             # get file from S3
             s3_conn = boto.connect_s3()
             s3_bucket = s3_conn.get_bucket(bucket, validate=False)
@@ -466,18 +467,6 @@ class DownloaderNode(WorkerBase):
         self.logger.debug('Download done %s s3://%s/%s', ticket, bucket, filename)
         self.file_downloader_progress(ticket, fileurl, 'DONE')
 
-
-    def create_lock(self, lock_key, timeout):
-        # This is a good candidate for a method decorator.. ;-)
-        exists = self.redis_server.setnx(lock_key, timeout)
-        if exists:
-            self.logger.debug('Lock %s exists', lock_key)
-            timeout = float(self.redis_server.get(lock_key))
-            if time.time() > timeout:
-                self.redis_server.delete(lock_key)
-                self.logger.debug('Lock %s timeout, deleting it', lock_key)
-        return exists
-
     def movebcolz(self, ticket):
         # A notification from the controller that all files are downloaded on all nodes,
         # the files in this ticket can be moved into place
@@ -490,6 +479,8 @@ class DownloaderNode(WorkerBase):
                 ready_path = os.path.join(ticket_path, filename)
                 self.logger.debug("Moving %s %s" % (ready_path, prod_path))
                 shutil.move(ready_path, prod_path)
+        else:
+            self.logger.debug('Doing a movebcolz for path %s which does not exist', ticket_path)
 
     def remove_ticket(self, ticket):
         # Remove all Redis entries for this node and ticket
