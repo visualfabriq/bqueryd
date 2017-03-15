@@ -381,7 +381,7 @@ class DownloaderNode(WorkerBase):
         for ticket in movebcolz_list:
             try:
                 lock_key = '%s%s_%s' % (bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX, self.node_name, ticket)
-                lock = self.redis_server.lock(lock_key, timeout=30)
+                lock = self.redis_server.lock(lock_key, timeout=bqueryd.REDIS_DOWNLOAD_LOCK_MOVE_DURATION)
                 if lock.acquire(False):
                     self.logger.info('Download %s done, doing movebcolz' % ticket)
                     self.movebcolz(ticket)
