@@ -45,7 +45,7 @@ class WorkerBase(object):
         self.data_files = set()
         context = zmq.Context()
         self.socket = context.socket(zmq.ROUTER)
-        self.socket.setsockopt(zmq.LINGER, 0)
+        self.socket.setsockopt(zmq.LINGER, 500)
         self.socket.identity = self.worker_id
         self.poller = zmq.Poller()
         self.poller.register(self.socket, zmq.POLLIN | zmq.POLLOUT)

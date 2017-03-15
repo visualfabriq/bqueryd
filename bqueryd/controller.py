@@ -29,7 +29,7 @@ class ControllerNode(object):
         self.redis_server = redis.from_url(redis_url)
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.ROUTER)
-        self.socket.setsockopt(zmq.LINGER, 0)
+        self.socket.setsockopt(zmq.LINGER, 500)
         self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)  # Paranoid for debugging purposes
         self.socket.setsockopt(zmq.SNDTIMEO, 1000)  # Short timeout
         self.poller = zmq.Poller()
