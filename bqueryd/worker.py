@@ -383,13 +383,18 @@ class DownloaderNode(WorkerBase):
                 lock_key = '%s%s_%s' % (bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX, self.node_name, ticket)
                 lock = self.redis_server.lock(lock_key, timeout=bqueryd.REDIS_DOWNLOAD_LOCK_MOVE_DURATION)
                 if lock.acquire(False):
-                    self.logger.info('Download %s done, doing movebcolz' % ticket)
-                    self.movebcolz(ticket)
-                    self.remove_ticket(ticket)
-                    lock.release()
-
-                    tdm = TicketDoneMessage({'ticket': ticket})
-                    self.send_to_all(tdm)
+                    # There is a timing issue, with a lock being released and
+                    # A worker still having removed tickets in memory.
+                    # After acquiring the lock check to see if the ticket still exists
+                    if self.redis_server.hgetall(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket):
+                        self.logger.info('Download %s done, doing movebcolz' % ticket)
+                        self.movebcolz(ticket)
+                        self.remove_ticket(ticket)
+                        lock.release()
+                        tdm = TicketDoneMessage({'ticket': ticket})
+                        self.send_to_all(tdm)
+                    else:
+                        self.logger.debug('Lock acquired for removed ticket %s', ticket)
                 else:
                     self.logger.debug('Movebcolz locked %s', lock_key)
             except:
