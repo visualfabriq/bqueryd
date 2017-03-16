@@ -424,7 +424,7 @@ class DownloaderNode(WorkerBase):
             self.file_downloader_progress(ticket, fileurl, 'DONE')
         else:
             # acquire a lock for this node_filename
-            lock_key = bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX + self.node_name + fileurl
+            lock_key = bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX + self.node_name + ticket + fileurl
             lock = self.redis_server.lock(lock_key, timeout=bqueryd.REDIS_DOWNLOAD_LOCK_DURATION)
 
             if not lock.acquire(False):
