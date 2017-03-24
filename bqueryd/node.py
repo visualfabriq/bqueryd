@@ -20,6 +20,8 @@ if __name__ == '__main__':
         bqueryd.WorkerNode(redis_url=redis_url, loglevel=loglevel).go()
     elif 'downloader' in sys.argv:
         bqueryd.DownloaderNode(redis_url=redis_url, loglevel=loglevel).go()
+    elif 'movebcolz' in sys.argv:
+        bqueryd.MoveBcolzNode(redis_url=redis_url, loglevel=loglevel).go()
     else:
         if len(sys.argv) > 1 and sys.argv[1].startswith('tcp:'):
             rpc = bqueryd.RPC(address=sys.argv[1], redis_url=redis_url, loglevel=loglevel)

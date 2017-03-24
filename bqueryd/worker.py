@@ -31,7 +31,7 @@ WRM_DELAY = 20  # how often in seconds to send a WorkerRegisterMessage
 MAX_MESSAGES = 2000  # after how many messages should the controller be restarted
 MAX_MESSAGES = int(MAX_MESSAGES + 0.30 * MAX_MESSAGES * (random.random() - 0.5))  # randomize actual amount
 MAX_MEMORY = pow(2,20) # Max memory of 1GB
-DOWNLOAD_DELAY = 2 # how often in seconds to check for downloads
+DOWNLOAD_DELAY = 5 # how often in seconds to check for downloads
 bcolz.set_nthreads(1)
 
 
@@ -325,23 +325,19 @@ class DownloaderNode(WorkerBase):
         if time.time() - self.last_download_check > DOWNLOAD_DELAY:
             self.check_downloads()
 
-
     def check_downloads(self):
         # Note, the files being downloaded are stored per key on filename,
         # Yet files are grouped as being inside a ticket for downloading at the same time
-        # this done so that a group of files can be synchrionized in downloading
+        # this done so that a group of files can be synchronized in downloading
         # when called from rpc.download(filenames=[...]
 
         self.last_download_check = time.time()
-        movebcolz_list = set()
         tickets = self.redis_server.keys(bqueryd.REDIS_TICKET_KEY_PREFIX + '*')
-
 
         for ticket_w_prefix in tickets:
             ticket_details = self.redis_server.hgetall(ticket_w_prefix)
             ticket = ticket_w_prefix[len(bqueryd.REDIS_TICKET_KEY_PREFIX):]
 
-            in_progress_count = 0
             ticket_details_items = ticket_details.items()
             random.shuffle(ticket_details_items)
 
@@ -359,47 +355,31 @@ class DownloaderNode(WorkerBase):
                     continue
                 timestamp, progress = float(tmp[0]), tmp[1]
 
+                if node != self.node_name:
+                    continue
+
                 # If every progress slot for this ticket is DONE, we can consider the whole ticket done
                 if progress == 'DONE':
                     continue
 
-                in_progress_count += 1
-                if node != self.node_name:
-                    continue
                 try:
-                    self.download_file(ticket, filename)
-                    break # break out of the loop so we don't end up staying in a large loop for giant tickets
+                    # acquire a lock for this node_filename
+                    lock_key = bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX + self.node_name + ticket + filename
+                    lock = self.redis_server.lock(lock_key, timeout=bqueryd.REDIS_DOWNLOAD_LOCK_DURATION, )
+                    if lock.acquire(False):
+                        self.download_file(ticket, filename)
+                        break  # break out of the loop so we don't end up staying in a large loop for giant tickets
                 except:
                     self.logger.exception('Problem downloading %s %s', ticket, filename)
                     # Clean up the whole ticket if an error occured
                     self.remove_ticket(ticket)
                     break
-
-            if in_progress_count == 0:  # every progress for this slot is set to DONE
-                movebcolz_list.add(ticket)
-
-        for ticket in movebcolz_list:
-            try:
-                lock_key = '%s%s_%s' % (bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX, self.node_name, ticket)
-                lock = self.redis_server.lock(lock_key, timeout=bqueryd.REDIS_DOWNLOAD_LOCK_MOVE_DURATION)
-                if lock.acquire(False):
-                    # There is a timing issue, with a lock being released and
-                    # A worker still having removed tickets in memory.
-                    # After acquiring the lock check to see if the ticket still exists
-                    if self.redis_server.hgetall(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket):
-                        self.logger.info('Download %s done, doing movebcolz' % ticket)
-                        self.movebcolz(ticket)
-                        self.remove_ticket(ticket)
+                finally:
+                    try:
                         lock.release()
-                        tdm = TicketDoneMessage({'ticket': ticket})
-                        self.send_to_all(tdm)
-                    else:
-                        self.logger.debug('Lock acquired for removed ticket %s', ticket)
-                else:
-                    self.logger.debug('Movebcolz locked %s', lock_key)
-            except:
-                self.logger.exception('Problem doing movebcolz %s', ticket)
-                self.remove_ticket(ticket)
+                    except redis.lock.LockError:
+                        pass
+
 
     def file_downloader_progress(self, ticket, filename, progress):
         # A progress slot contains a timestamp_filesize
@@ -423,14 +403,6 @@ class DownloaderNode(WorkerBase):
             self.logger.info("%s exists, skipping download" % temp_path)
             self.file_downloader_progress(ticket, fileurl, 'DONE')
         else:
-            # acquire a lock for this node_filename
-            lock_key = bqueryd.REDIS_DOWNLOAD_LOCK_PREFIX + self.node_name + ticket + fileurl
-            lock = self.redis_server.lock(lock_key, timeout=bqueryd.REDIS_DOWNLOAD_LOCK_DURATION)
-
-            if not lock.acquire(False):
-                self.logger.debug('Could not aquire lock %s', lock_key)
-                return
-
             self.logger.info("Downloading %s s3://%s/%s" % (ticket, bucket, filename))
             # get file from S3
             s3_conn = boto.connect_s3()
@@ -471,9 +443,23 @@ class DownloaderNode(WorkerBase):
                 if os.path.exists(tmp_filename):
                     os.remove(tmp_filename)
                 os.close(fd)
-                self.redis_server.delete(lock_key)
         self.logger.debug('Download done %s s3://%s/%s', ticket, bucket, filename)
         self.file_downloader_progress(ticket, fileurl, 'DONE')
+
+    def remove_ticket(self, ticket):
+        # Remove all Redis entries for this node and ticket
+        # it can't be done per file as we don't have the bucket name from which a file was downloaded
+        self.logger.debug('Removing ticket %s from redis', ticket)
+        for node_filename_slot in self.redis_server.hgetall(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket):
+            if node_filename_slot.startswith(self.node_name):
+                self.logger.debug('Removing ticket_%s %s', ticket, node_filename_slot)
+                self.redis_server.hdel(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot)
+        tdm = TicketDoneMessage({'ticket': ticket})
+        self.send_to_all(tdm)
+
+
+class MoveBcolzNode(DownloaderNode):
+    workertype = 'movebcolz'
 
     def movebcolz(self, ticket):
         # A notification from the controller that all files are downloaded on all nodes,
@@ -487,15 +473,53 @@ class DownloaderNode(WorkerBase):
                 ready_path = os.path.join(ticket_path, filename)
                 self.logger.debug("Moving %s %s" % (ready_path, prod_path))
                 shutil.move(ready_path, prod_path)
+            self.logger.debug('Now removing entire ticket %s', ticket_path)
+            shutil.rmtree(ticket_path, ignore_errors=True)
         else:
             self.logger.debug('Doing a movebcolz for path %s which does not exist', ticket_path)
 
-    def remove_ticket(self, ticket):
-        # Remove all Redis entries for this node and ticket
-        # it can't be done per file as we don't have the bucket name from which a file was downloaded
-        for node_filename_slot in self.redis_server.hgetall(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket):
-            if node_filename_slot.startswith(self.node_name):
-                self.logger.debug('Removing ticket_%s %s', ticket, node_filename_slot)
-                self.redis_server.hdel(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot)
-        ticket_path = os.path.join(bqueryd.INCOMING, ticket)
-        shutil.rmtree(ticket_path, ignore_errors=True)
+    def check_downloads(self):
+        # Check all the entries for a specific ticket over all the nodes
+        # only if ALL the nodes are _DONE downloading, move the bcolz files in this ticket into place.
+
+        self.last_download_check = time.time()
+        tickets = self.redis_server.keys(bqueryd.REDIS_TICKET_KEY_PREFIX + '*')
+
+        for ticket_w_prefix in tickets:
+            ticket_details = self.redis_server.hgetall(ticket_w_prefix)
+            ticket = ticket_w_prefix[len(bqueryd.REDIS_TICKET_KEY_PREFIX):]
+
+            in_progress_count = 0
+            ticket_details_items = ticket_details.items()
+
+            ticket_on_this_node = False
+
+            for node_filename_slot, progress_slot in ticket_details_items:
+                tmp = node_filename_slot.split('_')
+                if len(tmp) < 2:
+                    self.logger.critical("Bogus node_filename_slot %s", node_filename_slot)
+                    continue
+                node = tmp[0]
+                filename = '_'.join(tmp[1:])
+
+                tmp = progress_slot.split('_')
+                if len(tmp) != 2:
+                    self.logger.critical("Bogus progress_slot %s", progress_slot)
+                    continue
+                timestamp, progress = float(tmp[0]), tmp[1]
+
+                # If every progress slot for this ticket is DONE, we can consider the whole ticket done
+                if progress != 'DONE':
+                    in_progress_count += 1
+
+                if node == self.node_name:
+                    ticket_on_this_node = True
+
+
+            if in_progress_count == 0 and ticket_on_this_node:
+                try:
+                    self.movebcolz(ticket)
+                except:
+                    self.logger.exception('Error occurred in movebcolz %s', ticket)
+                finally:
+                    self.remove_ticket(ticket)
