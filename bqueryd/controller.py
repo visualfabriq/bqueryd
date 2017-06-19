@@ -114,7 +114,7 @@ class ControllerNode(object):
 
         for worker_id, worker in self.worker_map.items():
             # ignore downloader workers
-            if worker.get('workertype') == 'download':
+            if worker.get('workertype') in ('download', 'movebcolz'):
                 continue
 
             if worker.get('busy'):
