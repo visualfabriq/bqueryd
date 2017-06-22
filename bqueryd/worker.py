@@ -23,6 +23,7 @@ import signal
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage, TicketDoneMessage
 from bqueryd.tool import rm_file_or_dir
+import importlib
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
@@ -235,7 +236,26 @@ class WorkerBase(object):
 class WorkerNode(WorkerBase):
     workertype = 'calc'
 
+    def execute_code(self, msg):
+        args, kwargs = msg.get_args_kwargs()
+
+        func_fully_qualified_name = kwargs['function'].split('.')
+        module_name = '.'.join(func_fully_qualified_name[:-1])
+        func_name = func_fully_qualified_name[-1]
+        func_args = kwargs.get("args", [])
+        func_kwargs = kwargs.get("kwargs", {})
+
+        mod = importlib.import_module(module_name)
+        function = getattr(mod, func_name)
+        result = function(*func_args, **func_kwargs)
+
+        msg.add_as_binary('result', result)
+        return msg
+
     def handle_work(self, msg):
+        if msg.isa('execute_code'):
+            return self.execute_code(msg)
+
         tmp_dir = tempfile.mkdtemp(prefix='result_')
         buf_file_fd, buf_file = tempfile.mkstemp(prefix='tar_')
         os.close(buf_file_fd)
