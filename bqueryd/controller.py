@@ -397,6 +397,16 @@ class ControllerNode(object):
         elif msg.isa('readfile'):
             self.worker_out_messages[None].append(msg.copy())
             result = None
+        elif msg.isa('execute_code'):
+            args, kwargs = msg.get_args_kwargs()
+            if 'function' not in kwargs:
+                result = 'Error, function kwarg is missing!'
+            else:
+                self.worker_out_messages[None].append(msg.copy())
+                if kwargs.get('wait', False):
+                    result = None
+                else:
+                    result = 'OK, %s dispatched' % kwargs['function']
         elif msg['payload'] in ('sleep',):
             args, kwargs = msg.get_args_kwargs()
             if args:
