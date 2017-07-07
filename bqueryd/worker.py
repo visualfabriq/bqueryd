@@ -24,6 +24,7 @@ from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, B
     DoneMessage, TicketDoneMessage
 from bqueryd.tool import rm_file_or_dir
 import importlib
+import json
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
@@ -491,6 +492,10 @@ class MoveBcolzNode(DownloaderNode):
                 if os.path.exists(prod_path):
                     shutil.rmtree(prod_path, ignore_errors=True)
                 ready_path = os.path.join(ticket_path, filename)
+                # Add a metadata file to the downloaded item
+                metadata = {'ticket': ticket, 'timestamp': time.time(), 'localtime': time.ctime()}
+                metadata_filepath = os.path.join(ready_path, 'bqueryd.metadata')
+                open(metadata_filepath, 'w').write(json.dumps(metadata, indent=2))
                 self.logger.debug("Moving %s %s" % (ready_path, prod_path))
                 shutil.move(ready_path, prod_path)
             self.logger.debug('Now removing entire ticket %s', ticket_path)
