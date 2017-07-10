@@ -105,9 +105,6 @@ class WorkerBase(object):
                 has_new_files = True
             replacement_data_files.add(data_file)
         self.data_files = replacement_data_files
-        if len(self.data_files) < 1:
-            self.logger.debug('Data directory %s has no files like %s or %s' % (
-                self.data_dir, DATA_FILE_EXTENSION, DATA_SHARD_FILE_EXTENSION))
         return has_new_files
 
     def prepare_wrm(self):
@@ -246,8 +243,11 @@ class WorkerNode(WorkerBase):
         func_args = kwargs.get("args", [])
         func_kwargs = kwargs.get("kwargs", {})
 
+        self.logger.debug('Importing module: %s' % module_name)
         mod = importlib.import_module(module_name)
         function = getattr(mod, func_name)
+        self.logger.debug('Executing function: %s' % func_name)
+        self.logger.debug('args: %s kwargs: %s' % (func_args, func_kwargs))
         result = function(*func_args, **func_kwargs)
 
         msg.add_as_binary('result', result)
