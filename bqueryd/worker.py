@@ -24,6 +24,7 @@ from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, B
     DoneMessage, TicketDoneMessage
 from bqueryd.tool import rm_file_or_dir
 import importlib
+import json
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
@@ -104,9 +105,6 @@ class WorkerBase(object):
                 has_new_files = True
             replacement_data_files.add(data_file)
         self.data_files = replacement_data_files
-        if len(self.data_files) < 1:
-            self.logger.debug('Data directory %s has no files like %s or %s' % (
-                self.data_dir, DATA_FILE_EXTENSION, DATA_SHARD_FILE_EXTENSION))
         return has_new_files
 
     def prepare_wrm(self):
@@ -245,8 +243,11 @@ class WorkerNode(WorkerBase):
         func_args = kwargs.get("args", [])
         func_kwargs = kwargs.get("kwargs", {})
 
+        self.logger.debug('Importing module: %s' % module_name)
         mod = importlib.import_module(module_name)
         function = getattr(mod, func_name)
+        self.logger.debug('Executing function: %s' % func_name)
+        self.logger.debug('args: %s kwargs: %s' % (func_args, func_kwargs))
         result = function(*func_args, **func_kwargs)
 
         msg.add_as_binary('result', result)
@@ -491,6 +492,10 @@ class MoveBcolzNode(DownloaderNode):
                 if os.path.exists(prod_path):
                     shutil.rmtree(prod_path, ignore_errors=True)
                 ready_path = os.path.join(ticket_path, filename)
+                # Add a metadata file to the downloaded item
+                metadata = {'ticket': ticket, 'timestamp': time.time(), 'localtime': time.ctime()}
+                metadata_filepath = os.path.join(ready_path, 'bqueryd.metadata')
+                open(metadata_filepath, 'w').write(json.dumps(metadata, indent=2))
                 self.logger.debug("Moving %s %s" % (ready_path, prod_path))
                 shutil.move(ready_path, prod_path)
             self.logger.debug('Now removing entire ticket %s', ticket_path)
