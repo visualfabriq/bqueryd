@@ -19,6 +19,7 @@ try:
 except ImportError:
     from StringIO import StringIO
 import glob
+import pandas as pd
 from bquery import ctable
 from bqueryd.tool import rm_file_or_dir
 
