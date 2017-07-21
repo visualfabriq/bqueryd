@@ -17,7 +17,7 @@ def get_my_ip():
         ifname = eth_interfaces[-1]
     for x in netifaces.ifaddresses(ifname)[netifaces.AF_INET]:
         # Return first addr found
-        return x['addr']
+        return str(x['addr'])
 
 def bind_to_random_port(socket, addr, min_port=49152, max_port=65536, max_tries=100):
     "We can't just use the zmq.Socket.bind_to_random_port, as we wan't to set the identity before binding"

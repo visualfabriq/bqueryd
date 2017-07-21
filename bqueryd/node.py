@@ -1,23 +1,27 @@
-#!/srv/python/venv/bin/ipython -i
+#!/usr/bin/env python
 import bqueryd
-import os
 import sys
 import logging
 import configobj
 
 config = configobj.ConfigObj('/etc/bqueryd.cfg')
-redis_url = config.get('redis_url')
+redis_url = config.get('redis_url', 'redis://127.0.0.1:6379/0')
 
-if __name__ == '__main__':
+def main():
     if '-v' in sys.argv:
         loglevel = logging.DEBUG
     else:
         loglevel = logging.INFO
 
+    data_dir = bqueryd.DEFAULT_DATA_DIR
+    for arg in sys.argv:
+        if arg.startswith('--data_dir='):
+            data_dir = arg[11:]
+
     if 'controller' in sys.argv:
         bqueryd.ControllerNode(redis_url=redis_url, loglevel=loglevel).go()
     elif 'worker' in sys.argv:
-        bqueryd.WorkerNode(redis_url=redis_url, loglevel=loglevel).go()
+        bqueryd.WorkerNode(redis_url=redis_url, loglevel=loglevel, data_dir=data_dir).go()
     elif 'downloader' in sys.argv:
         bqueryd.DownloaderNode(redis_url=redis_url, loglevel=loglevel).go()
     elif 'movebcolz' in sys.argv:
@@ -27,4 +31,8 @@ if __name__ == '__main__':
             rpc = bqueryd.RPC(address=sys.argv[1], redis_url=redis_url, loglevel=loglevel)
         else:
             rpc = bqueryd.RPC(redis_url=redis_url, loglevel=loglevel)
-        sys.stderr.write('Run this script with python -i , and then you will have a variable named "rpc" as a connection.\n')
+        import IPython
+        IPython.embed()
+
+if __name__ == '__main__':
+    main()
