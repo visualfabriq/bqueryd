@@ -2,6 +2,11 @@ from distutils.core import setup
 
 setup(name='bqueryd',
       version='0.10',
+      description='A companion library to make bquery distributed',
+      maintainer='Carst Vaartjes',
+      maintainer_email='cvaartjes@visualfabriq.com',
+      url='https://github.com/visualfabriq/b4query',
+      license='MIT',
       packages=['bqueryd'],
       install_requires = [
           'bquery>=0.2.10',
