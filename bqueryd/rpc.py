@@ -11,6 +11,18 @@ import binascii
 from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
 import traceback
 import json
+import tempfile
+import tarfile
+from tarfile import TarFile, TarError
+try:
+    from cStringIO import StringIO
+except ImportError:
+    from StringIO import StringIO
+import glob
+import pandas as pd
+from bquery import ctable
+from bqueryd.tool import rm_file_or_dir
+
 
 class RPCError(Exception):
     """Base class for exceptions in this module."""
@@ -100,8 +112,13 @@ class RPC(object):
             if not rep:
                 raise RPCError("No response from DQE, retries %s exceeded" % self.retries)
             try:
-                rep = msg_factory(json.loads(rep))
-                result = rep.get_from_binary('result')
+                # The results returned from controller is a tarfile with all the results, convert it to a Dataframe
+                if name == 'groupby':
+                    _, groupby_col_list, agg_list, where_terms_list = args[0], args[1], args[2], args[3]
+                    result = self.uncompress_groupby_to_df(rep, groupby_col_list, agg_list, where_terms_list, aggregate=kwargs.get('aggregate', False))
+                else:
+                    rep = msg_factory(json.loads(rep))
+                    result = rep.get_from_binary('result')
             except (ValueError, TypeError):
                 result = rep
             if isinstance(rep, ErrorMessage):
@@ -139,6 +156,50 @@ class RPC(object):
         signature = self.download(filenames=filenames, bucket=bucket)
 
         return signature
+
+    def uncompress_groupby_to_df(self, result_tar, groupby_col_list, agg_list, where_terms_list, aggregate=False):
+        # uncompress result retured by the groupby and convert it to a Pandas DataFrame
+        try:
+            tar_file = TarFile(fileobj=StringIO(result_tar))
+            tmp_dir = tempfile.mkdtemp(prefix='tar_dir_')
+            tar_file.extractall(tmp_dir)
+        except TarError:
+            raise ValueError(result_tar)
+        del result_tar
+        del tar_file
+
+        ct = None
+
+        # now untar and aggregate the individual shard results
+        for i, sub_tar in enumerate(glob.glob(os.path.join(tmp_dir, '*'))):
+            new_dir = os.path.join(tmp_dir, 'bcolz_' + str(i))
+            rm_file_or_dir(new_dir)
+            with tarfile.open(sub_tar, mode='r') as tar_file:
+                tar_file.extractall(new_dir)
+            # rm_file_or_dir(sub_tar)
+            ctable_dir = glob.glob(os.path.join(new_dir, '*'))[0]
+            new_ct = ctable(rootdir=ctable_dir, mode='a')
+            if i == 0:
+                ct = new_ct
+            else:
+                ct.append(new_ct)
+
+        # aggregate by groupby parameters
+        if ct is None:
+            result_df = pd.DataFrame()
+        elif aggregate:
+            new_dir = os.path.join(tmp_dir, 'end_result')
+            rm_file_or_dir(new_dir)
+            # we can only sum now
+            new_agg_list = [[x[2], 'sum', x[2]] for x in agg_list]
+            result_ctable = ct.groupby(groupby_col_list, new_agg_list, rootdir=new_dir)
+            result_df = result_ctable.todataframe()
+        else:
+            result_df = ct.todataframe()
+
+        rm_file_or_dir(tmp_dir)
+
+        return result_df
 
     def get_download_data(self):
         redis_server = redis.from_url(self.redis_url)
