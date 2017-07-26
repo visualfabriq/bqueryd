@@ -40,7 +40,7 @@ bcolz.set_nthreads(1)
 class WorkerBase(object):
     def __init__(self, data_dir=bqueryd.DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
-            raise Exception("Datadir %s is not a valid difrectory" % data_dir)
+            raise Exception("Datadir %s is not a valid directory" % data_dir)
         self.worker_id = binascii.hexlify(os.urandom(8))
         self.node_name = socket.gethostname()
         self.data_dir = data_dir
@@ -403,9 +403,18 @@ class DownloaderNode(WorkerBase):
 
 
     def file_downloader_progress(self, ticket, filename, progress):
+        node_filename_slot = '%s_%s' % (self.node_name, filename)
+        # Check to see if the progress slot exists at all, if it does not exist this ticket has been cancelled
+        # by some kind of intervention, stop the download and clean up.
+        tmp = self.redis_server.hget(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot)
+        if not tmp:
+            # Clean up the whole ticket contents from disk
+            ticket_path = os.path.join(bqueryd.INCOMING, ticket)
+            self.logger.debug('Now removing entire ticket %s', ticket_path)
+            shutil.rmtree(ticket_path, ignore_errors=True)
+            raise Exception("Ticket %s progress slot %s not found, aborting download" % (ticket, node_filename_slot))
         # A progress slot contains a timestamp_filesize
         progress_slot = '%s_%s' % (time.time(), progress)
-        node_filename_slot = '%s_%s' % (self.node_name, filename)
         self.redis_server.hset(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot, progress_slot)
 
     def download_file(self, ticket, fileurl):

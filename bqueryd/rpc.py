@@ -62,6 +62,7 @@ class RPC(object):
         self.logger = bqueryd.logger.getChild('rpc')
         self.logger.setLevel(loglevel)
         self.context = zmq.Context()
+        self.redis_url = redis_url
         redis_server = redis.from_url(redis_url)
         self.retries = retries
         self.timeout = timeout
@@ -199,3 +200,31 @@ class RPC(object):
         rm_file_or_dir(tmp_dir)
 
         return result_df
+
+    def get_download_data(self):
+        redis_server = redis.from_url(self.redis_url)
+        tickets = set(redis_server.keys(bqueryd.REDIS_TICKET_KEY_PREFIX+'*'))
+        data = {}
+        for ticket in tickets:
+            tmp = redis_server.hgetall(ticket)
+            data[ticket] = tmp
+        return data
+
+    def downloads(self):
+        data = self.get_download_data()
+        buf = []
+        for k,v in data.items():
+            done_count = 0
+            for kk, vv in v.items():
+                if vv.endswith('_DONE'):
+                    done_count += 1
+            buf.append((k, '%s/%s' % (done_count, len(v))))
+        return buf
+
+    def delete_download(self, ticket):
+        redis_server = redis.from_url(self.redis_url)
+        tmp = redis_server.hgetall(ticket)
+        count = 0
+        for k, v in tmp.items():
+            count += redis_server.hdel(ticket, k)
+        return count
