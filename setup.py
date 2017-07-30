@@ -15,8 +15,7 @@ setup(name='bqueryd',
           'boto>=2.43.0',
           'smart_open>=1.3.5',
           'netifaces>=0.10.5',
-          'configobj>=5.0.6',
-          'ipython>=5.4.1'
+          'configobj>=5.0.6'
       ],
       entry_points={
             'console_scripts': [
