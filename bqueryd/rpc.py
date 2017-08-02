@@ -47,7 +47,7 @@ class RPC(object):
                 self.address = c
                 break
             except:
-                traceback.print_exc()
+                self.logger.debug(traceback.print_exc())
                 continue
         if reply:
             # Now set the timeout to the actual requested
