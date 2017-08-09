@@ -1,7 +1,7 @@
 from distutils.core import setup
 
 setup(name='bqueryd',
-      version='0.10',
+      version='0.10.1',
       description='A companion library to make bquery distributed',
       maintainer='Carst Vaartjes',
       maintainer_email='cvaartjes@visualfabriq.com',
