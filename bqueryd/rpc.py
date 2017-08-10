@@ -46,8 +46,8 @@ class RPC(object):
                 reply = msg_factory(tmp_sock.recv_json())
                 self.address = c
                 break
-            except Exception as e:
-                self.logger.debug(str(e))
+            except:
+                traceback.print_exc()
                 continue
         if reply:
             # Now set the timeout to the actual requested
