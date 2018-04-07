@@ -1,11 +1,14 @@
 #!/usr/bin/env python
-import bqueryd
-import sys
 import logging
+import sys
+
 import configobj
+
+import bqueryd
 
 config = configobj.ConfigObj('/etc/bqueryd.cfg')
 redis_url = config.get('redis_url', 'redis://127.0.0.1:6379/0')
+
 
 def main():
     if '-v' in sys.argv:
@@ -33,6 +36,7 @@ def main():
             rpc = bqueryd.RPC(redis_url=redis_url, loglevel=loglevel)
         import IPython
         IPython.embed()
+
 
 if __name__ == '__main__':
     main()
