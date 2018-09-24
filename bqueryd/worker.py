@@ -514,6 +514,8 @@ class MoveBcolzNode(DownloaderNode):
                 open(metadata_filepath, 'w').write(json.dumps(metadata, indent=2))
                 self.logger.debug("Moving %s %s" % (ready_path, prod_path))
                 shutil.move(ready_path, prod_path)
+                # Ensure files are written to disk
+                os.system('sync')
             self.logger.debug('Now removing entire ticket %s', ticket_path)
             shutil.rmtree(ticket_path, ignore_errors=True)
         else:
