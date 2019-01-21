@@ -19,9 +19,9 @@ from setuptools.command.build_ext import build_ext as _build_ext
 
 
 # Check this Python version is supported
-if any([v < (2, 6), (3,) < v < (3, 3)]):
+if any([v < (2, 6), (3,) < v < (3, 5)]):
     raise Exception("Unsupported Python version %d.%d. Requires Python >= 2.7 "
-                    "or >= 3.3." % v[:2])
+                    "or >= 3.5." % v[:2])
 
 
 class build_ext(_build_ext):
@@ -62,14 +62,14 @@ sources = []
 
 cmdclass = {'build_ext': build_ext}
 
-optional_libs = ['numexpr>=1.4.1']
+optional_libs = ['numexpr>=2.6.9']
 install_requires = [
     'bquery>=0.2.10',
-    'pyzmq>=16.0.2',
-    'redis>=2.10.5',
-    'boto>=2.43.0',
-    'smart_open>=1.3.5',
-    'netifaces>=0.10.5',
+    'pyzmq>=17.1.2',
+    'redis>=3.0.1',
+    'boto3>=1.9.82',
+    'smart_open>=1.8.0',
+    'netifaces>=0.10.9',
     'configobj>=5.0.6'
 ]
 setup_requires = []
@@ -90,9 +90,9 @@ classifiers = [
         'Programming Language :: Python :: 2',
         'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.3',
-        'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
     ]
 
 setup(

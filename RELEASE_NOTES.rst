@@ -1,3 +1,7 @@
+Release  0.3.0
+=======================
+- Move to boto3
+
 Release  0.2.1
 =======================
 - Manifest fix

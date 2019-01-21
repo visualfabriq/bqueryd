@@ -17,7 +17,7 @@ import zipfile
 from ssl import SSLError
 
 import bcolz
-import boto
+import boto3
 import bquery
 import redis
 import smart_open
@@ -439,12 +439,23 @@ class DownloaderNode(WorkerBase):
             self.file_downloader_progress(ticket, fileurl, 'DONE')
         else:
             self.logger.info("Downloading %s s3://%s/%s" % (ticket, bucket, filename))
+
             # get file from S3
-            s3_conn = boto.connect_s3()
-            s3_bucket = s3_conn.get_bucket(bucket, validate=False)
-            k = s3_bucket.get_key(filename, validate=False)
-            k.open()
-            size = k.size
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            if not credentials:
+                raise ValueError('Missing S3 credentials')
+
+            credentials = credentials.get_frozen_credentials()
+            access_key = credentials.access_key
+            secret_key = credentials.secret_key
+
+            s3_conn = boto3.resource('s3')
+            object_summary = s3_conn.Object(bucket, filename)
+            size = object_summary.content_length
+
+            key = 's3://{}:{}@{}/{}'.format(access_key, secret_key, bucket, filename)
+
             try:
                 fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
 
@@ -452,7 +463,7 @@ class DownloaderNode(WorkerBase):
                 # Sometime we get timeout errors on the SSL connections
                 for x in range(3):
                     try:
-                        with smart_open.smart_open(k) as fin:
+                        with smart_open.smart_open(key, 'rb') as fin:
                             buf = True
                             progress = 0
                             while buf:

@@ -9,7 +9,7 @@ import time
 import traceback
 from tarfile import TarFile, TarError
 
-import boto
+import boto3
 import redis
 import smart_open
 import zmq
@@ -146,9 +146,16 @@ class RPC(object):
             # Try to compress the whole bcolz direcory into a single zipfile
             tmpzip_filename, signature = bqueryd.util.zip_to_file(filepath, bqueryd.INCOMING)
 
-            s3_conn = boto.connect_s3()
-            s3_bucket = s3_conn.get_bucket(bucket, validate=False)
-            key = s3_bucket.get_key(filename, validate=False)
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            if not credentials:
+                raise ValueError('Missing S3 credentials')
+
+            credentials = credentials.get_frozen_credentials()
+            access_key = credentials.access_key
+            secret_key = credentials.secret_key
+
+            key = 's3://{}:{}@{}/{}'.format(access_key, secret_key, self.bucket, filename)
 
             # Use smart_open to stream the file into S3 as the files can get very large
             with smart_open.smart_open(key, mode='wb') as fout:
