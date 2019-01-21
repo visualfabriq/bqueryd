@@ -11,10 +11,14 @@ redis_url = config.get('redis_url', 'redis://127.0.0.1:6379/0')
 
 
 def main():
-    if '-v' in sys.argv:
+    if '-vvv' in sys.argv:
         loglevel = logging.DEBUG
-    else:
+    elif '-vv' in sys.argv:
         loglevel = logging.INFO
+    elif '-v' in sys.argv:
+        loglevel = logging.WARNING
+    else:
+        loglevel = logging.ERROR
 
     data_dir = bqueryd.DEFAULT_DATA_DIR
     for arg in sys.argv:
