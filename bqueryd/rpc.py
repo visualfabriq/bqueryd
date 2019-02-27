@@ -1,19 +1,22 @@
-import logging
-import zmq
-import time
-import os
-import redis
-import random
-import bqueryd
-import boto
-import smart_open
 import binascii
-from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
-import traceback
 import json
-import tempfile
+import logging
+import os
+import random
 import tarfile
+import tempfile
+import time
+import traceback
 from tarfile import TarFile, TarError
+
+import boto3
+import redis
+import smart_open
+import zmq
+
+import bqueryd
+from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
+
 try:
     from cStringIO import StringIO
 except ImportError:
@@ -51,14 +54,14 @@ class RPC(object):
                 continue
         if reply:
             # Now set the timeout to the actual requested
-            self.logger.debug("Connection OK, setting network timeout to %s milliseconds", self.timeout*1000)
+            self.logger.debug("Connection OK, setting network timeout to %s milliseconds", self.timeout * 1000)
             self.controller = tmp_sock
-            self.controller.setsockopt(zmq.RCVTIMEO, self.timeout*1000)
+            self.controller.setsockopt(zmq.RCVTIMEO, self.timeout * 1000)
         else:
             raise Exception('No controller connection')
 
-
-    def __init__(self, address=None, timeout=120, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO, retries=3):
+    def __init__(self, address=None, timeout=120, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO,
+                 retries=3):
         self.logger = bqueryd.logger.getChild('rpc')
         self.logger.setLevel(loglevel)
         self.context = zmq.Context()
@@ -78,7 +81,6 @@ class RPC(object):
             controllers = [address]
         self.controllers = controllers
         self.connect_socket()
-
 
     def __getattr__(self, name):
 
@@ -106,7 +108,7 @@ class RPC(object):
                     if x == self.retries:
                         raise e
                     else:
-                        self.logger.debug("Error, retrying %s" % (x+1))
+                        self.logger.debug("Error, retrying %s" % (x + 1))
                         self.connect_socket()
                         pass
             if not rep:
@@ -115,7 +117,8 @@ class RPC(object):
                 # The results returned from controller is a tarfile with all the results, convert it to a Dataframe
                 if name == 'groupby':
                     _, groupby_col_list, agg_list, where_terms_list = args[0], args[1], args[2], args[3]
-                    result = self.uncompress_groupby_to_df(rep, groupby_col_list, agg_list, where_terms_list, aggregate=kwargs.get('aggregate', False))
+                    result = self.uncompress_groupby_to_df(rep, groupby_col_list, agg_list, where_terms_list,
+                                                           aggregate=kwargs.get('aggregate', False))
                 else:
                     rep = msg_factory(json.loads(rep))
                     result = rep.get_from_binary('result')
@@ -143,9 +146,16 @@ class RPC(object):
             # Try to compress the whole bcolz direcory into a single zipfile
             tmpzip_filename, signature = bqueryd.util.zip_to_file(filepath, bqueryd.INCOMING)
 
-            s3_conn = boto.connect_s3()
-            s3_bucket = s3_conn.get_bucket(bucket, validate=False)
-            key = s3_bucket.get_key(filename, validate=False)
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            if not credentials:
+                raise ValueError('Missing S3 credentials')
+
+            credentials = credentials.get_frozen_credentials()
+            access_key = credentials.access_key
+            secret_key = credentials.secret_key
+
+            key = 's3://{}:{}@{}/{}'.format(access_key, secret_key, self.bucket, filename)
 
             # Use smart_open to stream the file into S3 as the files can get very large
             with smart_open.smart_open(key, mode='wb') as fout:
@@ -203,7 +213,7 @@ class RPC(object):
 
     def get_download_data(self):
         redis_server = redis.from_url(self.redis_url)
-        tickets = set(redis_server.keys(bqueryd.REDIS_TICKET_KEY_PREFIX+'*'))
+        tickets = set(redis_server.keys(bqueryd.REDIS_TICKET_KEY_PREFIX + '*'))
         data = {}
         for ticket in tickets:
             tmp = redis_server.hgetall(ticket)
@@ -213,7 +223,7 @@ class RPC(object):
     def downloads(self):
         data = self.get_download_data()
         buf = []
-        for k,v in data.items():
+        for k, v in data.items():
             done_count = 0
             for kk, vv in v.items():
                 if vv.endswith('_DONE'):

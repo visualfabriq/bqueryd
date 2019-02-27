@@ -1,16 +1,18 @@
-import netifaces
-import zmq
-import random
-import os
-import tempfile
-import zipfile
 import binascii
-import time
-import sys
+import netifaces
+import os
+import random
 import shutil
+import tempfile
+import time
+import zipfile
+
+import zmq
+
 
 def get_my_ip():
-    eth_interfaces = sorted([ifname for ifname in netifaces.interfaces() if (ifname.startswith('eth') or ifname.startswith('en'))])
+    eth_interfaces = sorted(
+        [ifname for ifname in netifaces.interfaces() if (ifname.startswith('eth') or ifname.startswith('en'))])
     if len(eth_interfaces) < 1:
         ifname = 'lo'
     else:
@@ -19,6 +21,7 @@ def get_my_ip():
         # Return first addr found
         return str(x['addr'])
 
+
 def bind_to_random_port(socket, addr, min_port=49152, max_port=65536, max_tries=100):
     "We can't just use the zmq.Socket.bind_to_random_port, as we wan't to set the identity before binding"
     for i in range(max_tries):
@@ -26,7 +29,7 @@ def bind_to_random_port(socket, addr, min_port=49152, max_port=65536, max_tries=
             port = random.randrange(min_port, max_port)
             socket.identity = '%s:%s' % (addr, port)
             socket.bind('tcp://*:%s' % port)
-            #socket.bind('%s:%s' % (addr, port))
+            # socket.bind('%s:%s' % (addr, port))
         except zmq.ZMQError as exception:
             en = exception.errno
             if en == zmq.EADDRINUSE:
@@ -36,6 +39,7 @@ def bind_to_random_port(socket, addr, min_port=49152, max_port=65536, max_tries=
         else:
             return socket.identity
     raise zmq.ZMQBindError("Could not bind socket to random port.")
+
 
 def zip_to_file(file_path, destination):
     fd, zip_filename = tempfile.mkstemp(suffix=".zip", dir=destination)
@@ -49,10 +53,11 @@ def zip_to_file(file_path, destination):
                     myzip.write(absname, arcname)
         else:
             myzip.write(file_path, file_path)
-        zip_info = ''.join(str(zipinfoi.CRC) for zipinfoi in  myzip.infolist())
+        zip_info = ''.join(str(zipinfoi.CRC) for zipinfoi in myzip.infolist())
         checksum = hex(binascii.crc32(zip_info) & 0xffffffff)
 
     return zip_filename, checksum
+
 
 def rm_file_or_dir(path):
     if os.path.exists(path):
@@ -67,6 +72,7 @@ def rm_file_or_dir(path):
             else:
                 os.remove(path)
 
+
 def tree_checksum(path):
     allfilenames = set()
     for root, dirs, filenames in os.walk(path):
@@ -74,6 +80,7 @@ def tree_checksum(path):
             allfilenames.add(os.path.join(root, filename))
     buf = ''.join(sorted(allfilenames))
     return hex(binascii.crc32(buf) & 0xffffffff)
+
 
 ###################################################################################################
 # Various Utility methods for user-friendly info display

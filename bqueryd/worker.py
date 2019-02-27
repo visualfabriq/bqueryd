@@ -1,30 +1,32 @@
-import os
-import time
-import zmq
-import bquery
-import bcolz
-import traceback
-import tempfile
-import tarfile
-import redis
 import binascii
+import errno
+import importlib
+import json
 import logging
+import os
 import random
-import bqueryd
-import socket
 import resource
-import boto
-import smart_open
+import shutil
+import signal
+import socket
+import tarfile
+import tempfile
+import time
+import traceback
 import zipfile
 from ssl import SSLError
-import shutil
-import errno
-import signal
+
+import bcolz
+import boto3
+import bquery
+import redis
+import smart_open
+import zmq
+
+import bqueryd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage, TicketDoneMessage
 from bqueryd.tool import rm_file_or_dir
-import importlib
-import json
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
@@ -32,8 +34,8 @@ POLLING_TIMEOUT = 5000  # timeout in ms : how long to wait for network poll, thi
 WRM_DELAY = 20  # how often in seconds to send a WorkerRegisterMessage
 MAX_MESSAGES = 2000  # after how many messages should the controller be restarted
 MAX_MESSAGES = int(MAX_MESSAGES + 0.30 * MAX_MESSAGES * (random.random() - 0.5))  # randomize actual amount
-MAX_MEMORY = pow(2,20) # Max memory of 1GB
-DOWNLOAD_DELAY = 5 # how often in seconds to check for downloads
+MAX_MEMORY = pow(2, 20)  # Max memory of 1GB
+DOWNLOAD_DELAY = 5  # how often in seconds to check for downloads
 bcolz.set_nthreads(1)
 
 
@@ -65,6 +67,7 @@ class WorkerBase(object):
         def _signal_handler(signum, frame):
             self.logger.info("Received TERM signal, stopping.")
             self.running = False
+
         return _signal_handler
 
     def send(self, addr, msg):
@@ -73,7 +76,7 @@ class WorkerBase(object):
                 data = msg['data']
                 del msg['data']
                 self.socket.send_multipart([addr, msg.to_json(), data])
-            else:    
+            else:
                 self.socket.send_multipart([addr, msg.to_json()])
         except zmq.ZMQError, ze:
             self.logger.critical("Problem with %s: %s" % (addr, ze))
@@ -223,13 +226,15 @@ class WorkerBase(object):
 
             maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
             if maxrss / MAX_MEMORY > 0:
-                self.logger.critical('Memory usage according to ru_maxrss of %s is higher than 1GB, restarting' % maxrss)
+                self.logger.critical(
+                    'Memory usage according to ru_maxrss of %s is higher than 1GB, restarting' % maxrss)
                 self.running = False
 
         return msg
 
     def handle_work(self, msg):
         raise NotImplementedError
+
 
 class WorkerNode(WorkerBase):
     workertype = 'calc'
@@ -334,6 +339,7 @@ class WorkerNode(WorkerBase):
 
         return msg
 
+
 class DownloaderNode(WorkerBase):
     workertype = 'download'
 
@@ -401,7 +407,6 @@ class DownloaderNode(WorkerBase):
                     except redis.lock.LockError:
                         pass
 
-
     def file_downloader_progress(self, ticket, filename, progress):
         node_filename_slot = '%s_%s' % (self.node_name, filename)
         # Check to see if the progress slot exists at all, if it does not exist this ticket has been cancelled
@@ -434,12 +439,23 @@ class DownloaderNode(WorkerBase):
             self.file_downloader_progress(ticket, fileurl, 'DONE')
         else:
             self.logger.info("Downloading %s s3://%s/%s" % (ticket, bucket, filename))
+
             # get file from S3
-            s3_conn = boto.connect_s3()
-            s3_bucket = s3_conn.get_bucket(bucket, validate=False)
-            k = s3_bucket.get_key(filename, validate=False)
-            k.open()
-            size = k.size
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            if not credentials:
+                raise ValueError('Missing S3 credentials')
+
+            credentials = credentials.get_frozen_credentials()
+            access_key = credentials.access_key
+            secret_key = credentials.secret_key
+
+            s3_conn = boto3.resource('s3')
+            object_summary = s3_conn.Object(bucket, filename)
+            size = object_summary.content_length
+
+            key = 's3://{}:{}@{}/{}'.format(access_key, secret_key, bucket, filename)
+
             try:
                 fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
 
@@ -447,7 +463,7 @@ class DownloaderNode(WorkerBase):
                 # Sometime we get timeout errors on the SSL connections
                 for x in range(3):
                     try:
-                        with smart_open.smart_open(k) as fin:
+                        with smart_open.smart_open(key, 'rb') as fin:
                             buf = True
                             progress = 0
                             while buf:
@@ -548,7 +564,6 @@ class MoveBcolzNode(DownloaderNode):
 
                 if node == self.node_name:
                     ticket_on_this_node = True
-
 
             if in_progress_count == 0 and ticket_on_this_node:
                 try:

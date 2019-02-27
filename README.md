@@ -134,7 +134,7 @@ This should pick a random worker from those connected to the controller and run 
 
 ## Distributing bcolz files
 
-If your system is properly configured to use [boto](https://github.com/boto/boto3) for communication with Amazon Web Services, you can use bqueryd to atomically distribute collections of files to all nodes in the bqueryd cluster.
+If your system is properly configured to use [boto](https://github.com/boto/boto3) for communication with Amazon Web Services, you can use bqueryd to automically distribute collections of files to all nodes in the bqueryd cluster.
 Create some bcolz files in the default bqueryd directory ```/srv/bcolz/``` (or move the ones we created in the getting started section of this readme)
 To manage the download process, some other special types of workers need to be started.
 

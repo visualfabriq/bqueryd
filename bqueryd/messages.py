@@ -1,6 +1,7 @@
-import json
 import cPickle
+import json
 import time
+
 
 def msg_factory(msg):
     if type(msg) is str:
@@ -67,6 +68,7 @@ class Message(dict):
         kwargs = params.get('kwargs', {})
         args = params.get('args', [])
         return args, kwargs
+
 
 class WorkerRegisterMessage(Message):
     msg_type = 'worker_register'

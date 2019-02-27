@@ -1,14 +1,16 @@
-import time
-import zmq
-import logging
 import binascii
-import traceback
-import random
+import logging
 import os
+import random
+import socket
 import tarfile
 import tempfile
-import socket
+import time
+import traceback
+
 import redis
+import zmq
+
 import bqueryd
 from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, \
     BusyMessage, DoneMessage, StopMessage, TicketDoneMessage
@@ -176,7 +178,6 @@ class ControllerNode(object):
                 if tmp_file_fd:
                     os.close(tmp_file_fd)
 
-
                 del result_file
                 original_rpc['results'][filename] = tmp_file
 
@@ -194,7 +195,6 @@ class ControllerNode(object):
                                 archive.add(result_file, arcname=filename)
                                 # clean temp file
                                 rm_file_or_dir(result_file)
-
 
                     # We have received all the segment, send a reply to RPC caller
                     del msg
@@ -220,7 +220,7 @@ class ControllerNode(object):
 
     def handle_out(self):
         # If there have been new affinity keys added, rotate them
-        for k,v in self.worker_out_messages.items():
+        for k, v in self.worker_out_messages.items():
             if v and (k not in self.worker_out_messages_sequence):
                 self.worker_out_messages_sequence.append(k)
 
@@ -238,9 +238,9 @@ class ControllerNode(object):
         nextq = self.worker_out_messages.get(nextq_key)
         self.worker_out_messages_sequence.append(nextq_key)
         if not nextq:
-            if nextq_key: # Only delete those for which there is an affinity, the None q is default and should stay
+            if nextq_key:  # Only delete those for which there is an affinity, the None q is default and should stay
                 del self.worker_out_messages[nextq_key]
-            return # the next buffer is empty just return and try the next one in the next round
+            return  # the next buffer is empty just return and try the next one in the next round
 
         msg = nextq[0]
         worker_id = msg.get('worker_id')
@@ -268,12 +268,12 @@ class ControllerNode(object):
     def handle_in(self):
         self.msg_count_in += 1
         data = self.socket.recv_multipart()
-        binary, sender = None, None # initialise outside for edge cases
+        binary, sender = None, None  # initialise outside for edge cases
         if len(data) == 3:
-            if data[1] == '': # This is a RPC call from a zmq.REQ socket
+            if data[1] == '':  # This is a RPC call from a zmq.REQ socket
                 sender, _blank, msg_buf = data
                 self.handle_rpc(sender, msg_factory(msg_buf))
-                return                
+                return
             sender, msg_buf, binary = data
         elif len(data) == 2:  # This is an internode call from another zmq.ROUTER, a Controller or Worker
             sender, msg_buf = data
@@ -301,7 +301,7 @@ class ControllerNode(object):
                 self.others[addr]['node'] = node
                 self.others[addr]['uptime'] = uptime
             else:
-                self.logger.critical("bogus Info message received from %s %s", sender, msg) 
+                self.logger.critical("bogus Info message received from %s %s", sender, msg)
         else:
             self.logger.debug("Got a msg but don't know what to do with it %s" % msg)
 
@@ -355,7 +355,6 @@ class ControllerNode(object):
                     self.rpc_results.append(msg2)
                 del self.rpc_segments[ticket]
             return
-
 
         if 'token' in msg:
             # A message might have been passed on to a worker for processing and needs to be returned to
@@ -452,7 +451,8 @@ class ControllerNode(object):
 
             for node in nodes:
                 # A progress slot contains a timestamp_filesize
-                progress_slot = '%s_%s' % (time.time()-60, -1)  # give the slot a timestamp of now -1 minute so we can see when it was created
+                progress_slot = '%s_%s' % (
+                time.time() - 60, -1)  # give the slot a timestamp of now -1 minute so we can see when it was created
                 node_filename_slot = '%s_%s' % (node, filename)
                 self.redis_server.hset(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot, progress_slot)
 
@@ -571,4 +571,3 @@ class ControllerNode(object):
                   os.path.join(RUNFILES_LOCATION, 'bqueryd_controller.address')):
             if os.path.exists(x):
                 os.remove(x)
-
