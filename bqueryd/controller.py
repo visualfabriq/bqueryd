@@ -82,7 +82,7 @@ class ControllerNode(object):
         # Connect to new other controllers we don't know about yet
         for x in all_servers:
             if x not in self.others:
-                self.logger.debug('Connecting to %s' % x)
+                self.logger.info('Connecting to %s', x)
                 self.socket.connect(x)
                 self.others[x] = {'connect_time': time.time()}
             else:
@@ -318,7 +318,7 @@ class ControllerNode(object):
         self.worker_map.setdefault(worker_id, {})['last_seen'] = time.time()
 
         if msg.isa(WorkerRegisterMessage):
-            # self.logger.debug('Worker registered %s' % worker_id)
+            self.logger.debug('Worker registered %s', worker_id)
             for filename in msg.get('data_files', []):
                 self.files_map.setdefault(filename, set()).add(worker_id)
             self.worker_map[worker_id]['node'] = msg.get('node', '...')
@@ -328,12 +328,12 @@ class ControllerNode(object):
             return
 
         if msg.isa(BusyMessage):
-            # self.logger.debug('Worker %s sent BusyMessage' % worker_id)
+            self.logger.debug('Worker %s sent BusyMessage', worker_id)
             self.worker_map[worker_id]['busy'] = True
             return
 
         if msg.isa(DoneMessage):
-            # self.logger.debug('Worker %s sent DoneMessage' % worker_id)
+            self.logger.debug('Worker %s sent DoneMessage', worker_id)
             self.worker_map[worker_id]['busy'] = False
             return
 
@@ -533,7 +533,7 @@ class ControllerNode(object):
         return data
 
     def remove_worker(self, worker_id):
-        self.logger.debug("Removing worker %s" % worker_id)
+        self.logger.warning("Removing worker %s", worker_id)
         if worker_id in self.worker_map:
             del self.worker_map[worker_id]
         for worker_set in self.files_map.values():

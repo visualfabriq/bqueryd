@@ -70,10 +70,15 @@ install_requires = [
     'boto3>=1.9.82',
     'smart_open>=1.8.0',
     'netifaces>=0.10.9',
-    'configobj>=5.0.6'
+    'configobj>=5.0.6',
+    'psutil>=5.0.0',
 ]
 setup_requires = []
-tests_requires = []
+tests_requires = [
+    'pandas>=0.23.0',
+    'pytest>=4.0.0',
+    'codacy-coverage>=1.3.7',
+]
 extras_requires = []
 ext_modules = []
 package_data = {}

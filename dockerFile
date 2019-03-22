@@ -1,0 +1,15 @@
+FROM python:2.7
+
+ENV SHELL=/bin/bash
+RUN apt-get update -y && apt-get upgrade -y
+COPY misc/bqueryd.cfg /etc/bqueryd.cfg
+
+RUN mkdir -p /srv/ && mkdir -p /srv/datasets && mkdir -p /srv/src/ && mkdir -p /srv/bcolz/
+
+RUN wget -q https://s3.amazonaws.com/nyc-tlc/trip+data/yellow_tripdata_2016-01.csv -O /srv/datasets/yellow_tripdata_2016-01.csv
+
+COPY . /srv/src/bqueryd/
+WORKDIR /srv/src/bqueryd/
+RUN pip install -e .[test]
+CMD ["python"]
+
