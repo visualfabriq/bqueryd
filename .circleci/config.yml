@@ -23,11 +23,10 @@ jobs:
       - run:
           name: Run Tests
           working_directory: bqueryd
-          command: docker-compose -f docker-compose.yml run bqueryd pytest -vs tests
-#      - run: (This needs to be set up in Codacy)
-#          name: Upload Coverage
-#          command: python-codacy-coverage -r test-results/pytest-cov/coverage.xml
-#          working_directory: bqueryd
+          command: docker-compose -f docker-compose.yml run bqueryd pytest -vs tests --junitxml=test-results/pytest/pytest-report.xml --cov-report xml:test-results/pytest-cov/coverage.xml --cov=bqueryd
+#     - name: Upload Coverage
+#         command: python-codacy-coverage -r test-results/pytest-cov/coverage.xml
+#         working_directory: bqueryd
       - store_test_results:
           path: bqueryd/test-results
       - store_artifacts:

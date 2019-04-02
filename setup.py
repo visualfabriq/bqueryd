@@ -77,6 +77,7 @@ setup_requires = []
 tests_requires = [
     'pandas>=0.23.0',
     'pytest>=4.0.0',
+    'pytest-cov>=2.6.0',
     'codacy-coverage>=1.3.7',
 ]
 extras_requires = []
