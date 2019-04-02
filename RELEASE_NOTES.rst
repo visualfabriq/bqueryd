@@ -1,3 +1,7 @@
+Release 0.3.2
+=======================
+- Fix the issue with docker container exiting when run through docker-compose.
+
 Release 0.3.1
 =======================
 - Add docker-compose to containerize the project.

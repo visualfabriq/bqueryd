@@ -136,3 +136,7 @@ def test_downloader(redis_server, downloader, tmpdir):
         # Check that the progress slot has been updated
         updated_slot = redis_server.hget(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot)
         assert updated_slot.split('_')[-1] == 'DONE'
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v', '-s'])
