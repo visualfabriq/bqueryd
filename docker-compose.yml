@@ -1,0 +1,27 @@
+version: "3.4"
+services:
+  redis:
+    image: redis
+    networks:
+      default:
+        aliases:
+          - redis
+
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "4567-4584:4567-4584"
+    environment:
+      - SERVICES=s3
+      - HOSTNAME=localstack
+      - DEFAULT_REGION=eu-west-1
+
+  bqueryd:
+    image: bqueryd
+    build:
+      network: host
+      context: .
+      dockerfile: dockerFile
+    depends_on:
+      - redis
+      - localstack

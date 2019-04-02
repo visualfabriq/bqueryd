@@ -1,3 +1,10 @@
+Release 0.3.1
+=======================
+- Add docker-compose to containerize the project.
+- Add circleci config.
+- Add tests for downloader, rpc methods and movebcolz.
+- Simplify node restart check.
+
 Release  0.3.0
 =======================
 - Move to boto3

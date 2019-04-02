@@ -33,32 +33,6 @@ class RPCError(Exception):
 
 
 class RPC(object):
-    def connect_socket(self):
-        reply = None
-        for c in self.controllers:
-            self.logger.debug('Establishing socket connection to %s' % c)
-            tmp_sock = self.context.socket(zmq.REQ)
-            tmp_sock.setsockopt(zmq.RCVTIMEO, 2000)
-            tmp_sock.setsockopt(zmq.LINGER, 0)
-            tmp_sock.identity = self.identity
-            tmp_sock.connect(c)
-            # first ping the controller to see if it responds at all
-            msg = RPCMessage({'payload': 'ping'})
-            tmp_sock.send_json(msg)
-            try:
-                reply = msg_factory(tmp_sock.recv_json())
-                self.address = c
-                break
-            except:
-                traceback.print_exc()
-                continue
-        if reply:
-            # Now set the timeout to the actual requested
-            self.logger.debug("Connection OK, setting network timeout to %s milliseconds", self.timeout * 1000)
-            self.controller = tmp_sock
-            self.controller.setsockopt(zmq.RCVTIMEO, self.timeout * 1000)
-        else:
-            raise Exception('No controller connection')
 
     def __init__(self, address=None, timeout=120, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO,
                  retries=3):
@@ -81,6 +55,33 @@ class RPC(object):
             controllers = [address]
         self.controllers = controllers
         self.connect_socket()
+
+    def connect_socket(self):
+        reply = None
+        for c in self.controllers:
+            self.logger.debug('Establishing socket connection to %s', c)
+            tmp_sock = self.context.socket(zmq.REQ)
+            tmp_sock.setsockopt(zmq.RCVTIMEO, 2000)
+            tmp_sock.setsockopt(zmq.LINGER, 0)
+            tmp_sock.identity = self.identity
+            tmp_sock.connect(c)
+            # first ping the controller to see if it responds at all
+            msg = RPCMessage({'payload': 'ping'})
+            tmp_sock.send_json(msg)
+            try:
+                reply = msg_factory(tmp_sock.recv_json())
+                self.address = c
+                break
+            except:
+                logging.exception("Unable to connect to %s", c)
+                continue
+        if reply:
+            # Now set the timeout to the actual requested
+            self.logger.debug("Connection OK, setting network timeout to %s milliseconds", self.timeout * 1000)
+            self.controller = tmp_sock
+            self.controller.setsockopt(zmq.RCVTIMEO, self.timeout * 1000)
+        else:
+            raise Exception('No controller connection')
 
     def __getattr__(self, name):
 
@@ -123,6 +124,7 @@ class RPC(object):
                     rep = msg_factory(json.loads(rep))
                     result = rep.get_from_binary('result')
             except (ValueError, TypeError):
+                self.logger.exception('Could not use RPC method: {}/{}'.format(name, rep))
                 result = rep
             if isinstance(rep, ErrorMessage):
                 raise RPCError(rep.get('payload'))
@@ -133,8 +135,10 @@ class RPC(object):
         return _rpc
 
     def distribute(self, filenames, bucket):
-        'Upload a local filename to the specified S3 bucket, and then issue a download command using the hash of the file'
-
+        """
+        Upload a local filename to the specified S3 bucket, and then issue a download command
+        using the hash of the file.
+        """
         for filename in filenames:
             if filename[0] != '/':
                 filepath = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
@@ -174,6 +178,7 @@ class RPC(object):
             tmp_dir = tempfile.mkdtemp(prefix='tar_dir_')
             tar_file.extractall(tmp_dir)
         except TarError:
+            self.logger.exception("Could not create/extract tar.")
             raise ValueError(result_tar)
         del result_tar
         del tar_file
