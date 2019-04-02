@@ -98,3 +98,7 @@ def test_movebcolz(redis_server, tmpdir):
     assert files_in_default_data_dir == ['incoming', 'test_mover.bcolz']
     # ticket_dir should have been deleted.
     assert not os.path.exists(ticket_dir)
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v', '-s'])
