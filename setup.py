@@ -45,8 +45,11 @@ def read(*parts):
 
 
 def get_version():
-    with codecs.open(abspath('VERSION'), "r", "utf-8") as f:
-        return f.readline().rstrip('\n')
+    version = {}
+    with open("bqueryd/version.py") as fp:
+        exec (fp.read(), version)
+    return version
+
 
 # Sources & libraries
 inc_dirs = [abspath('bqueryd')]
@@ -103,7 +106,7 @@ classifiers = [
 
 setup(
     name="bqueryd",
-    version=get_version(),
+    version=get_version()['__version__'],
     description='A distribution framework for Bquery',
     long_description=read("README.md"),
     classifiers=classifiers,
