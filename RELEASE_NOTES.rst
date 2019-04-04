@@ -1,3 +1,7 @@
+Release 0.3.4
+=======================
+- Fix module import error.
+
 Release 0.3.3
 =======================
 - Fix hardcoded version string in ``bqueryd.__init__``.
