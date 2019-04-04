@@ -1,6 +1,9 @@
-__version__ = 0.9
+import codecs
 import logging
 import os
+
+with codecs.open(os.path.join(os.path.dirname(__file__), '..', 'VERSION'), "r", "utf-8") as f:
+    __version__ = f.readline().rstrip('\n')
 
 logger = logging.getLogger('bqueryd')
 ch = logging.StreamHandler()

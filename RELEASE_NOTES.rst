@@ -1,3 +1,9 @@
+Release 0.3.3
+=======================
+- Fix hardcoded version string in ``bqueryd.__init__``.
+- Round robin over all available workers (both local and remote) in the controller unless
+"needs_local" is specified.
+
 Release 0.3.2
 =======================
 - Fix the issue with docker container exiting when run through docker-compose.
