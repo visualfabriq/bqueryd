@@ -133,12 +133,13 @@ class ControllerNode(object):
         # if there are no free workers at all, just bail
         if not free_workers:
             return None
-        # and if needs local and there are none, same thing
-        if needs_local and not free_local_workers:
-            return None
-        # give priority to local workers if there are free ones
-        if free_local_workers:
-            return random.choice(free_local_workers)
+
+        if needs_local:
+            if free_local_workers:
+                return random.choice(free_local_workers)
+            else:
+                return None
+
         return random.choice(free_workers)
 
     def process_sink_results(self):
