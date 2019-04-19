@@ -39,7 +39,7 @@ class LocalS3Downloader(bqueryd.DownloaderNode):
         return FAKE_ACCESS_KEY, FAKE_SECRET_KEY, self._conn
 
     def _get_transport_params(self):
-        return {'endpoint_url': 'http://localstack:4572'}
+        return {'endpoint_url': 'https://localstack:4572'}
 
 
 @pytest.fixture
@@ -128,7 +128,7 @@ def test_downloader(redis_server, downloader, tmpdir):
         redis_server.hset(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot, progress_slot)
 
         # wait for the downloader to catch up
-        sleep(30)
+        sleep(10)
 
         # Check that incoming dir now has the test.bcolz file.
         assert os.listdir(incoming_dir) == ['test.bcolz']
