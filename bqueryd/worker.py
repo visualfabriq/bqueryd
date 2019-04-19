@@ -465,7 +465,7 @@ class DownloaderNode(WorkerBase):
                 for x in range(3):
                     try:
                         transport_params = self._get_transport_params()
-                        with smart_open.smart_open(key, 'rb', **transport_params) as fin:
+                        with smart_open.open(key, 'rb', transport_params=transport_params) as fin:
                             buf = True
                             progress = 0
                             while buf:
