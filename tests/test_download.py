@@ -128,7 +128,7 @@ def test_downloader(redis_server, downloader, tmpdir):
         redis_server.hset(bqueryd.REDIS_TICKET_KEY_PREFIX + ticket, node_filename_slot, progress_slot)
 
         # wait for the downloader to catch up
-        sleep(10)
+        sleep(30)
 
         # Check that incoming dir now has the test.bcolz file.
         assert os.listdir(incoming_dir) == ['test.bcolz']
