@@ -39,7 +39,10 @@ class LocalS3Downloader(bqueryd.DownloaderNode):
         return FAKE_ACCESS_KEY, FAKE_SECRET_KEY, self._conn
 
     def _get_transport_params(self):
-        return {'endpoint_url': 'http://localstack:4572'}
+        return {
+            'resource_kwargs':
+                {'endpoint_url': 'http://localstack:4572'}
+        }
 
 
 @pytest.fixture
