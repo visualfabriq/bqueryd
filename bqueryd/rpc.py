@@ -35,7 +35,7 @@ class RPCError(Exception):
 class RPC(object):
 
     def __init__(self, address=None, timeout=120, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO,
-                 retries=3):
+                 retries=3, azure_conn_string=None):
         self.logger = bqueryd.logger.getChild('rpc')
         self.logger.setLevel(loglevel)
         self.context = zmq.Context()
@@ -44,6 +44,7 @@ class RPC(object):
         self.retries = retries
         self.timeout = timeout
         self.identity = binascii.hexlify(os.urandom(8))
+        self.azure_conn_string = azure_conn_string
 
         if not address:
             # Bind to a random controller
@@ -136,7 +137,7 @@ class RPC(object):
 
     def distribute(self, filenames, bucket):
         """
-        Upload a local filename to the specified S3 bucket, and then issue a download command
+        Upload a local filename to the specified S3 bucket/Blob Storage, and then issue a download command
         using the hash of the file.
         """
         for filename in filenames:
@@ -150,16 +151,20 @@ class RPC(object):
             # Try to compress the whole bcolz direcory into a single zipfile
             tmpzip_filename, signature = bqueryd.util.zip_to_file(filepath, bqueryd.INCOMING)
 
-            session = boto3.Session()
-            credentials = session.get_credentials()
-            if not credentials:
-                raise ValueError('Missing S3 credentials')
+            if self.azure_conn_string is None:  # AWS
+                session = boto3.Session()
+                credentials = session.get_credentials()
+                if not credentials:
+                    raise ValueError('Missing S3 credentials')
 
-            credentials = credentials.get_frozen_credentials()
-            access_key = credentials.access_key
-            secret_key = credentials.secret_key
+                credentials = credentials.get_frozen_credentials()
+                access_key = credentials.access_key
+                secret_key = credentials.secret_key
 
-            key = 's3://{}:{}@{}/{}'.format(access_key, secret_key, self.bucket, filename)
+                key = 's3://{}:{}@{}/{}'.format(access_key, secret_key, bucket, filename)
+            else:
+                key = 'azure://{}/{}'.format(bucket, filename)
+
 
             # Use smart_open to stream the file into S3 as the files can get very large
             with smart_open.smart_open(key, mode='wb') as fout:

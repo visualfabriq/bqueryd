@@ -29,20 +29,22 @@ from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, B
     DoneMessage, TicketDoneMessage
 from bqueryd.tool import rm_file_or_dir
 
+from azure.storage.blob.blob_client import BlobClient
+
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new controllers and datafiles
 POLLING_TIMEOUT = 5000
 # how often in seconds to send a WorkerRegisterMessage
 WRM_DELAY = 20
-MAX_MEMORY_KB = 2 * (2 ** 20)     # Max memory of 2GB, in Kilobytes
+MAX_MEMORY_KB = 2 * (2 ** 20)  # Max memory of 2GB, in Kilobytes
 DOWNLOAD_DELAY = 5  # how often in seconds to check for downloads
 bcolz.set_nthreads(1)
 
 
 class WorkerBase(object):
     def __init__(self, data_dir=bqueryd.DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG,
-                 restart_check=True):
+                 restart_check=True, azure_conn_string=None):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
             raise Exception("Datadir %s is not a valid directory" % data_dir)
         self.worker_id = binascii.hexlify(os.urandom(8))
@@ -66,6 +68,7 @@ class WorkerBase(object):
         self.msg_count = 0
         signal.signal(signal.SIGTERM, self.term_signal())
         self.running = False
+        self.azure_conn_string = azure_conn_string
 
     def term_signal(self):
         def _signal_handler(signum, frame):
@@ -433,6 +436,12 @@ class DownloaderNode(WorkerBase):
         return {}
 
     def download_file(self, ticket, fileurl):
+        if self.azure_conn_string is None:  # AWS
+            self.download_file_aws(ticket, fileurl)
+        else:
+            self.download_file_azure(ticket, fileurl)
+
+    def download_file_aws(self, ticket, fileurl)
         tmp = fileurl[5:].split('/')
         bucket = tmp[0]
         filename = '/'.join(tmp[1:])
@@ -505,6 +514,70 @@ class DownloaderNode(WorkerBase):
         secret_key = credentials.secret_key
         s3_conn = boto3.resource('s3')
         return access_key, secret_key, s3_conn
+
+    def download_file_azure(self, ticket, fileurl)
+        tmp = fileurl[8:].split('/')
+        container_name = tmp[0]
+        blob_name = tmp[1:]
+        ticket_path = os.path.join(bqueryd.INCOMING, ticket)
+        if not os.path.exists(ticket_path):
+            try:
+                os.makedirs(ticket_path)
+            except OSError, ose:
+                if ose == errno.EEXIST:
+                    pass  # different processes might try to create the same directory at _just_ the same time causing the previous check to fail
+        temp_path = os.path.join(bqueryd.INCOMING, ticket, blob_name)
+
+        if os.path.exists(temp_path):
+            self.logger.info("%s exists, skipping download" % temp_path)
+            self.file_downloader_progress(ticket, fileurl, 'DONE')
+        else:
+            self.logger.info(
+                "Downloading ticket [%s], container name [%s], blob name [%s]" % (ticket, container_name, blob_name))
+
+            blob_client = BlobClient.from_connection_string(conn_str=self.azure_conn_string, container=container_name,
+                                                            blob=blob_name)
+            properties = blob_client.get_blob_propèrties()
+            size = properties.size
+
+            key = 'azure://{}/{}'.format(container_name, blob_name)
+
+            try:
+                fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
+
+                # See: https://github.com/RaRe-Technologies/smart_open/commit/a751b7575bfc5cc277ae176cecc46dbb109e47a4
+                # Sometime we get timeout errors on the SSL connections
+                for x in range(3):
+                    try:
+                        transport_params = self._get_transport_params()
+                        with smart_open.open(key, 'rb', transport_params=transport_params) as fin:
+                            buf = True
+                            progress = 0
+                            while buf:
+                                buf = fin.read(pow(2, 20) * 16)  # Use a bigger buffer
+                                os.write(fd, buf)
+                                progress += len(buf)
+                                self.file_downloader_progress(ticket, fileurl, size)
+                        break
+                    except SSLError, e:
+                        if x == 2:
+                            raise e
+                        else:
+                            pass
+
+                # unzip the tmp file to the filename
+                # if temp_path already exists, first remove it.
+                if os.path.exists(temp_path):
+                    shutil.rmtree(temp_path, ignore_errors=True)
+                with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
+                    myzip.extractall(temp_path)
+                self.logger.debug("Downloaded %s" % tmp_filename)
+            finally:
+                if os.path.exists(tmp_filename):
+                    os.remove(tmp_filename)
+                os.close(fd)
+        self.logger.debug('Download done %s azure://%s/%s', ticket, container_name, blob_name)
+        self.file_downloader_progress(ticket, fileurl, 'DONE')
 
     def remove_ticket(self, ticket):
         # Remove all Redis entries for this node and ticket
