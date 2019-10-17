@@ -436,13 +436,13 @@ class DownloaderNode(WorkerBase):
         return {}
 
     def download_file(self, ticket, fileurl):
-        if self.azure_conn_string is None:  # AWS
-            self.download_file_aws(ticket, fileurl)
-        else:
+        if self.azure_conn_string:
             self.download_file_azure(ticket, fileurl)
+        else:
+            self.download_file_aws(ticket, fileurl)
 
     def download_file_aws(self, ticket, fileurl)
-        tmp = fileurl[5:].split('/')
+        tmp = fileurl.replace('s3://', '').split('/')
         bucket = tmp[0]
         filename = '/'.join(tmp[1:])
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
@@ -516,7 +516,7 @@ class DownloaderNode(WorkerBase):
         return access_key, secret_key, s3_conn
 
     def download_file_azure(self, ticket, fileurl)
-        tmp = fileurl[8:].split('/')
+        tmp = fileurl.replace('azure://', '').split('/')
         container_name = tmp[0]
         blob_name = tmp[1:]
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
@@ -535,42 +535,21 @@ class DownloaderNode(WorkerBase):
             self.logger.info(
                 "Downloading ticket [%s], container name [%s], blob name [%s]" % (ticket, container_name, blob_name))
 
-            blob_client = BlobClient.from_connection_string(conn_str=self.azure_conn_string, container=container_name,
-                                                            blob=blob_name)
-            properties = blob_client.get_blob_propèrties()
-            size = properties.size
-
-            key = 'azure://{}/{}'.format(container_name, blob_name)
-
+            # Download blob
             try:
+                blob_client = BlobClient.from_connection_string(conn_str=self.azure_conn_string,
+                                                                container=container_name,
+                                                                blob=blob_name)
+                stream = blob_client.download_blob()
+
                 fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
 
-                # See: https://github.com/RaRe-Technologies/smart_open/commit/a751b7575bfc5cc277ae176cecc46dbb109e47a4
-                # Sometime we get timeout errors on the SSL connections
-                for x in range(3):
-                    try:
-                        transport_params = self._get_transport_params()
-                        with smart_open.open(key, 'rb', transport_params=transport_params) as fin:
-                            buf = True
-                            progress = 0
-                            while buf:
-                                buf = fin.read(pow(2, 20) * 16)  # Use a bigger buffer
-                                os.write(fd, buf)
-                                progress += len(buf)
-                                self.file_downloader_progress(ticket, fileurl, size)
-                        break
-                    except SSLError, e:
-                        if x == 2:
-                            raise e
-                        else:
-                            pass
-
-                # unzip the tmp file to the filename
                 # if temp_path already exists, first remove it.
                 if os.path.exists(temp_path):
                     shutil.rmtree(temp_path, ignore_errors=True)
-                with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
-                    myzip.extractall(temp_path)
+
+                with open(tmp_filename, 'w') as file:
+                    stream.download_to_stream(file)
                 self.logger.debug("Downloaded %s" % tmp_filename)
             finally:
                 if os.path.exists(tmp_filename):

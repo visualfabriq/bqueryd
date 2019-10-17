@@ -36,10 +36,9 @@ def main(argv=sys.argv):
         bqueryd.MoveBcolzNode(redis_url=redis_url, loglevel=loglevel).go()
     else:
         if len(argv) > 1 and argv[1].startswith('tcp:'):
-            rpc = bqueryd.RPC(address=argv[1], redis_url=redis_url, loglevel=loglevel,
-                              azure_conn_string=azure_conn_string)
+            rpc = bqueryd.RPC(address=argv[1], redis_url=redis_url, loglevel=loglevel)
         else:
-            rpc = bqueryd.RPC(redis_url=redis_url, loglevel=loglevel, azure_conn_string=azure_conn_string)
+            rpc = bqueryd.RPC(redis_url=redis_url, loglevel=loglevel)
         import IPython
         IPython.embed()
 

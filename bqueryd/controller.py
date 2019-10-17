@@ -441,10 +441,10 @@ class ControllerNode(object):
             return "A download needs kwargs: (filenames=, bucket=)"
 
         # Turn filenames into URLs
-        if self.azure_conn_string is None:  # AWS
-            filenames = ['s3://%s/%s' % (bucket, filename) for filename in filenames]
-        else:
+        if self.azure_conn_string:
             filenames = ['azure://%s/%s' % (bucket, filename) for filename in filenames]
+        else:
+            filenames = ['s3://%s/%s' % (bucket, filename) for filename in filenames]
 
         ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
         for filename in filenames:
