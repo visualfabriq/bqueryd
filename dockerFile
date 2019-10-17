@@ -10,6 +10,7 @@ RUN wget -q https://s3.amazonaws.com/nyc-tlc/trip+data/yellow_tripdata_2016-01.c
 
 COPY . /srv/src/bqueryd/
 WORKDIR /srv/src/bqueryd/
+RUN pip install numpy==1.16.5
 RUN pip install -e .[test]
 # Keep the container running
 CMD sleep infinity
