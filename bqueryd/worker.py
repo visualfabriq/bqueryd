@@ -437,11 +437,11 @@ class DownloaderNode(WorkerBase):
 
     def download_file(self, ticket, fileurl):
         if self.azure_conn_string:
-            self.download_file_azure(ticket, fileurl)
+            self._download_file_azure(ticket, fileurl)
         else:
-            self.download_file_aws(ticket, fileurl)
+            self._download_file_aws(ticket, fileurl)
 
-    def download_file_aws(self, ticket, fileurl)
+    def _download_file_aws(self, ticket, fileurl):
         tmp = fileurl.replace('s3://', '').split('/')
         bucket = tmp[0]
         filename = '/'.join(tmp[1:])
@@ -515,7 +515,7 @@ class DownloaderNode(WorkerBase):
         s3_conn = boto3.resource('s3')
         return access_key, secret_key, s3_conn
 
-    def download_file_azure(self, ticket, fileurl)
+    def _download_file_azure(self, ticket, fileurl):
         tmp = fileurl.replace('azure://', '').split('/')
         container_name = tmp[0]
         blob_name = tmp[1:]
