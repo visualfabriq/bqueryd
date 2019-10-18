@@ -540,7 +540,7 @@ class DownloaderNode(WorkerBase):
                 blob_client = BlobClient.from_connection_string(conn_str=self.azure_conn_string,
                                                                 container=container_name,
                                                                 blob=blob_name)
-                stream = blob_client.download_blob()
+                downloaded_blob = blob_client.download_blob()
 
                 fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
 
@@ -548,8 +548,9 @@ class DownloaderNode(WorkerBase):
                 if os.path.exists(temp_path):
                     shutil.rmtree(temp_path, ignore_errors=True)
 
-                with open(tmp_filename, 'w') as file:
-                    stream.download_to_stream(file)
+                stream = open(tmp_filename, 'wb')
+                downloaded_blob.download_to_stream(stream)
+
                 self.logger.debug("Downloaded %s" % tmp_filename)
             finally:
                 if os.path.exists(tmp_filename):
