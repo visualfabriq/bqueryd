@@ -39,9 +39,9 @@ def main(argv=sys.argv):
         MoveBcolzNode(redis_url=redis_url, loglevel=loglevel).go()
     else:
         if len(argv) > 1 and argv[1].startswith('tcp:'):
-            rpc = RPC(address=argv[1], redis_url=redis_url, loglevel=loglevel)
+            RPC(address=argv[1], redis_url=redis_url, loglevel=loglevel)
         else:
-            rpc = RPC(redis_url=redis_url, loglevel=loglevel)
+            RPC(redis_url=redis_url, loglevel=loglevel)
         import IPython
         IPython.embed()
 
