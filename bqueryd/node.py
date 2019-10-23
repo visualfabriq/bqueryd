@@ -5,9 +5,13 @@ import sys
 import configobj
 
 import bqueryd
+from controller import ControllerNode
+from worker import WorkerNode, DownloaderNode, MoveBcolzNode
+from rpc import RPC
 
 config = configobj.ConfigObj('/etc/bqueryd.cfg')
 redis_url = config.get('redis_url', 'redis://127.0.0.1:6379/0')
+azure_conn_string = config.get('azure_conn_string', None)
 
 
 def main(argv=sys.argv):
@@ -26,18 +30,18 @@ def main(argv=sys.argv):
             data_dir = arg[11:]
 
     if 'controller' in argv:
-        bqueryd.ControllerNode(redis_url=redis_url, loglevel=loglevel).go()
+        ControllerNode(redis_url=redis_url, loglevel=loglevel, azure_conn_string=azure_conn_string).go()
     elif 'worker' in argv:
-        bqueryd.WorkerNode(redis_url=redis_url, loglevel=loglevel, data_dir=data_dir).go()
+        WorkerNode(redis_url=redis_url, loglevel=loglevel, data_dir=data_dir).go()
     elif 'downloader' in argv:
-        bqueryd.DownloaderNode(redis_url=redis_url, loglevel=loglevel).go()
+        DownloaderNode(redis_url=redis_url, loglevel=loglevel, azure_conn_string=azure_conn_string).go()
     elif 'movebcolz' in argv:
-        bqueryd.MoveBcolzNode(redis_url=redis_url, loglevel=loglevel).go()
+        MoveBcolzNode(redis_url=redis_url, loglevel=loglevel).go()
     else:
         if len(argv) > 1 and argv[1].startswith('tcp:'):
-            rpc = bqueryd.RPC(address=argv[1], redis_url=redis_url, loglevel=loglevel)
+            RPC(address=argv[1], redis_url=redis_url, loglevel=loglevel)
         else:
-            rpc = bqueryd.RPC(redis_url=redis_url, loglevel=loglevel)
+            RPC(redis_url=redis_url, loglevel=loglevel)
         import IPython
         IPython.embed()
 

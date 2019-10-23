@@ -12,10 +12,10 @@ import redis
 import zmq
 
 import bqueryd
-from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, \
+from messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, \
     BusyMessage, DoneMessage, StopMessage, TicketDoneMessage
-from bqueryd.tool import rm_file_or_dir
-from bqueryd.util import get_my_ip, bind_to_random_port
+from tool import rm_file_or_dir
+from util import get_my_ip, bind_to_random_port
 
 POLLING_TIMEOUT = 500  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
 DEAD_WORKER_TIMEOUT = 60  # time in seconds that we wait for a worker to respond before being removed
@@ -25,7 +25,7 @@ RUNFILES_LOCATION = '/srv/'  # Location to write a .pid and .address file
 
 
 class ControllerNode(object):
-    def __init__(self, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO):
+    def __init__(self, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO, azure_conn_string=None):
 
         self.redis_url = redis_url
         self.redis_server = redis.from_url(redis_url)
@@ -59,6 +59,7 @@ class ControllerNode(object):
         self.last_heartbeat = 0
         self.others = {}  # A dict of other Controllers running on other DQE nodes
         self.start_time = time.time()
+        self.azure_conn_string = azure_conn_string
 
     def send(self, addr, msg_buf, is_rpc=False):
         try:
@@ -439,8 +440,11 @@ class ControllerNode(object):
         if not (filenames and bucket):
             return "A download needs kwargs: (filenames=, bucket=)"
 
-        # Turn filenames into s3 URLs
-        filenames = ['s3://%s/%s' % (bucket, filename) for filename in filenames]
+        # Turn filenames into URLs
+        if self.azure_conn_string:
+            filenames = ['azure://%s/%s' % (bucket, filename) for filename in filenames]
+        else:
+            filenames = ['s3://%s/%s' % (bucket, filename) for filename in filenames]
 
         ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
         for filename in filenames:
