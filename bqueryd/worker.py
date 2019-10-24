@@ -1,35 +1,33 @@
+import bcolz
 import binascii
+import boto3
+import bquery
 import errno
 import gc
 import importlib
 import json
 import logging
 import os
-import random
-import tarfile
-import tempfile
-import traceback
-import zipfile
-
-import bcolz
-import boto3
-import bquery
 import psutil
+import random
 import redis
 import shutil
 import signal
 import smart_open
 import socket
+import tarfile
+import tempfile
 import time
+import traceback
+import zipfile
 import zmq
+from azure.storage.blob.blob_client import BlobClient
 from ssl import SSLError
 
 import bqueryd
 from bqueryd.messages import msg_factory, WorkerRegisterMessage, ErrorMessage, BusyMessage, StopMessage, \
     DoneMessage, TicketDoneMessage
 from bqueryd.tool import rm_file_or_dir
-
-from azure.storage.blob.blob_client import BlobClient
 
 DATA_FILE_EXTENSION = '.bcolz'
 DATA_SHARD_FILE_EXTENSION = '.bcolzs'
@@ -85,7 +83,7 @@ class WorkerBase(object):
                 self.socket.send_multipart([addr, msg.to_json(), data])
             else:
                 self.socket.send_multipart([addr, msg.to_json()])
-        except zmq.ZMQError, ze:
+        except zmq.ZMQError as ze:
             self.logger.critical("Problem with %s: %s" % (addr, ze))
 
     def check_controllers(self):
@@ -172,7 +170,7 @@ class WorkerBase(object):
 
         try:
             tmp = self.handle(msg)
-        except Exception, e:
+        except Exception as e:
             tmp = ErrorMessage(msg)
             tmp['payload'] = traceback.format_exc()
             self.logger.exception("Unable to handle message [%s]", msg)
@@ -449,7 +447,7 @@ class DownloaderNode(WorkerBase):
         if not os.path.exists(ticket_path):
             try:
                 os.makedirs(ticket_path)
-            except OSError, ose:
+            except OSError as ose:
                 if ose == errno.EEXIST:
                     pass  # different processes might try to create the same directory at _just_ the same time causing the previous check to fail
         temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
@@ -483,7 +481,7 @@ class DownloaderNode(WorkerBase):
                                 progress += len(buf)
                                 self.file_downloader_progress(ticket, fileurl, size)
                         break
-                    except SSLError, e:
+                    except SSLError as e:
                         if x == 2:
                             raise e
                         else:
@@ -491,17 +489,20 @@ class DownloaderNode(WorkerBase):
 
                 # unzip the tmp file to the filename
                 # if temp_path already exists, first remove it.
-                if os.path.exists(temp_path):
-                    shutil.rmtree(temp_path, ignore_errors=True)
-                with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
-                    myzip.extractall(temp_path)
-                self.logger.debug("Downloaded %s" % tmp_filename)
+                self._unzip_tmp_file(temp_path, tmp_filename)
             finally:
                 if os.path.exists(tmp_filename):
                     os.remove(tmp_filename)
                 os.close(fd)
-        self.logger.debug('Download done %s s3://%s/%s', ticket, bucket, filename)
+        self.logger.debug('Download done %s: %s', ticket, fileurl)
         self.file_downloader_progress(ticket, fileurl, 'DONE')
+
+    def _unzip_tmp_file(self, temp_path, tmp_filename):
+        if os.path.exists(temp_path):
+            shutil.rmtree(temp_path, ignore_errors=True)
+        with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
+            myzip.extractall(temp_path)
+        self.logger.debug("Downloaded %s" % tmp_filename)
 
     def _get_s3_conn(self):
         """Create a boto3 """
@@ -523,7 +524,7 @@ class DownloaderNode(WorkerBase):
         if not os.path.exists(ticket_path):
             try:
                 os.makedirs(ticket_path)
-            except OSError, ose:
+            except OSError as ose:
                 if ose == errno.EEXIST:
                     pass  # different processes might try to create the same directory at _just_ the same time causing the previous check to fail
         temp_path = os.path.join(bqueryd.INCOMING, ticket, blob_name)
@@ -537,27 +538,15 @@ class DownloaderNode(WorkerBase):
 
             # Download blob
             try:
-                blob_client = BlobClient.from_connection_string(conn_str=self.azure_conn_string, container_name=container_name, blob_name=blob_name)
-                downloaded_blob = blob_client.download_blob()
-
                 fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
+                blob_client = BlobClient.from_connection_string(
+                    conn_str=self.azure_conn_string, container_name=container_name, blob_name=blob_name
+                )
+                download_stream = blob_client.download_blob()
+                with open(tmp_filename, 'wb') as fh:
+                    fh.write(download_stream.content_as_bytes(max_concurrency=1))
 
-                # if temp_path already exists, first remove it.
-                if os.path.exists(temp_path):
-                    shutil.rmtree(temp_path, ignore_errors=True)
-
-                stream = open(tmp_filename, 'wb')
-                downloaded_blob.download_to_stream(stream)
-
-                self.file_downloader_progress(ticket, fileurl, 'DONE')
-
-                # unzip the tmp file to the filename
-                # if temp_path already exists, first remove it.
-                if os.path.exists(temp_path):
-                    shutil.rmtree(temp_path, ignore_errors=True)
-                with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
-                    myzip.extractall(temp_path)
-                self.logger.debug("Downloaded %s" % tmp_filename)
+                self._unzip_tmp_file(temp_path, tmp_filename)
             finally:
                 if os.path.exists(tmp_filename):
                     os.remove(tmp_filename)
