@@ -110,6 +110,7 @@ setup(
     version=get_version()['__version__'],
     description='A distribution framework for Bquery',
     long_description=read("README.md"),
+    long_description_content_type='text/markdown',
     classifiers=classifiers,
     author='Carst Vaartjes',
     author_email='cvaartjes@visualfabriq.com',
