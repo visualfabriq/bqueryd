@@ -1,3 +1,7 @@
+Release 0.3.5
+=======================
+- Added functionality for downloading files from Azure Blob Storage.
+
 Release 0.3.4
 =======================
 - Fix module import error.

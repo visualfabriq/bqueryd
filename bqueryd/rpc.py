@@ -6,12 +6,9 @@ import random
 import tarfile
 import tempfile
 import time
-import traceback
 from tarfile import TarFile, TarError
 
-import boto3
 import redis
-import smart_open
 import zmq
 
 import bqueryd
@@ -133,43 +130,6 @@ class RPC(object):
             return result
 
         return _rpc
-
-    def distribute(self, filenames, bucket):
-        """
-        Upload a local filename to the specified S3 bucket, and then issue a download command
-        using the hash of the file.
-        """
-        for filename in filenames:
-            if filename[0] != '/':
-                filepath = os.path.join(bqueryd.DEFAULT_DATA_DIR, filename)
-            else:
-                filepath = filename
-            if not os.path.exists(filepath):
-                raise RPCError('Filename %s not found' % filepath)
-
-            # Try to compress the whole bcolz direcory into a single zipfile
-            tmpzip_filename, signature = bqueryd.util.zip_to_file(filepath, bqueryd.INCOMING)
-
-            session = boto3.Session()
-            credentials = session.get_credentials()
-            if not credentials:
-                raise ValueError('Missing S3 credentials')
-
-            credentials = credentials.get_frozen_credentials()
-            access_key = credentials.access_key
-            secret_key = credentials.secret_key
-
-            key = 's3://{}:{}@{}/{}'.format(access_key, secret_key, self.bucket, filename)
-
-            # Use smart_open to stream the file into S3 as the files can get very large
-            with smart_open.smart_open(key, mode='wb') as fout:
-                fout.write(open(tmpzip_filename).read())
-
-            os.remove(tmpzip_filename)
-
-        signature = self.download(filenames=filenames, bucket=bucket)
-
-        return signature
 
     def uncompress_groupby_to_df(self, result_tar, groupby_col_list, agg_list, where_terms_list, aggregate=False):
         # uncompress result retured by the groupby and convert it to a Pandas DataFrame

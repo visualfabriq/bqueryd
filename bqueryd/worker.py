@@ -1,27 +1,27 @@
+import bcolz
 import binascii
+import boto3
+import bquery
 import errno
 import gc
 import importlib
 import json
 import logging
 import os
-import random
-import tarfile
-import tempfile
-import traceback
-import zipfile
-
-import bcolz
-import boto3
-import bquery
 import psutil
+import random
 import redis
 import shutil
 import signal
 import smart_open
 import socket
+import tarfile
+import tempfile
 import time
+import traceback
+import zipfile
 import zmq
+from azure.storage.blob.blob_client import BlobClient
 from ssl import SSLError
 
 import bqueryd
@@ -35,14 +35,14 @@ DATA_SHARD_FILE_EXTENSION = '.bcolzs'
 POLLING_TIMEOUT = 5000
 # how often in seconds to send a WorkerRegisterMessage
 WRM_DELAY = 20
-MAX_MEMORY_KB = 2 * (2 ** 20)     # Max memory of 2GB, in Kilobytes
+MAX_MEMORY_KB = 2 * (2 ** 20)  # Max memory of 2GB, in Kilobytes
 DOWNLOAD_DELAY = 5  # how often in seconds to check for downloads
 bcolz.set_nthreads(1)
 
 
 class WorkerBase(object):
     def __init__(self, data_dir=bqueryd.DEFAULT_DATA_DIR, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.DEBUG,
-                 restart_check=True):
+                 restart_check=True, azure_conn_string=None):
         if not os.path.exists(data_dir) or not os.path.isdir(data_dir):
             raise Exception("Datadir %s is not a valid directory" % data_dir)
         self.worker_id = binascii.hexlify(os.urandom(8))
@@ -66,6 +66,7 @@ class WorkerBase(object):
         self.msg_count = 0
         signal.signal(signal.SIGTERM, self.term_signal())
         self.running = False
+        self.azure_conn_string = azure_conn_string
 
     def term_signal(self):
         def _signal_handler(signum, frame):
@@ -82,7 +83,7 @@ class WorkerBase(object):
                 self.socket.send_multipart([addr, msg.to_json(), data])
             else:
                 self.socket.send_multipart([addr, msg.to_json()])
-        except zmq.ZMQError, ze:
+        except zmq.ZMQError as ze:
             self.logger.critical("Problem with %s: %s" % (addr, ze))
 
     def check_controllers(self):
@@ -169,7 +170,7 @@ class WorkerBase(object):
 
         try:
             tmp = self.handle(msg)
-        except Exception, e:
+        except Exception:
             tmp = ErrorMessage(msg)
             tmp['payload'] = traceback.format_exc()
             self.logger.exception("Unable to handle message [%s]", msg)
@@ -433,14 +434,20 @@ class DownloaderNode(WorkerBase):
         return {}
 
     def download_file(self, ticket, fileurl):
-        tmp = fileurl[5:].split('/')
+        if self.azure_conn_string:
+            self._download_file_azure(ticket, fileurl)
+        else:
+            self._download_file_aws(ticket, fileurl)
+
+    def _download_file_aws(self, ticket, fileurl):
+        tmp = fileurl.replace('s3://', '').split('/')
         bucket = tmp[0]
         filename = '/'.join(tmp[1:])
         ticket_path = os.path.join(bqueryd.INCOMING, ticket)
         if not os.path.exists(ticket_path):
             try:
                 os.makedirs(ticket_path)
-            except OSError, ose:
+            except OSError as ose:
                 if ose == errno.EEXIST:
                     pass  # different processes might try to create the same directory at _just_ the same time causing the previous check to fail
         temp_path = os.path.join(bqueryd.INCOMING, ticket, filename)
@@ -474,7 +481,7 @@ class DownloaderNode(WorkerBase):
                                 progress += len(buf)
                                 self.file_downloader_progress(ticket, fileurl, size)
                         break
-                    except SSLError, e:
+                    except SSLError as e:
                         if x == 2:
                             raise e
                         else:
@@ -482,17 +489,20 @@ class DownloaderNode(WorkerBase):
 
                 # unzip the tmp file to the filename
                 # if temp_path already exists, first remove it.
-                if os.path.exists(temp_path):
-                    shutil.rmtree(temp_path, ignore_errors=True)
-                with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
-                    myzip.extractall(temp_path)
-                self.logger.debug("Downloaded %s" % tmp_filename)
+                self._unzip_tmp_file(temp_path, tmp_filename)
             finally:
                 if os.path.exists(tmp_filename):
                     os.remove(tmp_filename)
                 os.close(fd)
-        self.logger.debug('Download done %s s3://%s/%s', ticket, bucket, filename)
+        self.logger.debug('Download done %s: %s', ticket, fileurl)
         self.file_downloader_progress(ticket, fileurl, 'DONE')
+
+    def _unzip_tmp_file(self, temp_path, tmp_filename):
+        if os.path.exists(temp_path):
+            shutil.rmtree(temp_path, ignore_errors=True)
+        with zipfile.ZipFile(tmp_filename, 'r', allowZip64=True) as myzip:
+            myzip.extractall(temp_path)
+        self.logger.debug("Downloaded %s" % tmp_filename)
 
     def _get_s3_conn(self):
         """Create a boto3 """
@@ -505,6 +515,45 @@ class DownloaderNode(WorkerBase):
         secret_key = credentials.secret_key
         s3_conn = boto3.resource('s3')
         return access_key, secret_key, s3_conn
+
+    def _download_file_azure(self, ticket, fileurl):
+        tmp = fileurl.replace('azure://', '').split('/')
+        container_name = tmp[0]
+        blob_name = tmp[1]
+        ticket_path = os.path.join(bqueryd.INCOMING, ticket)
+        if not os.path.exists(ticket_path):
+            try:
+                os.makedirs(ticket_path)
+            except OSError as ose:
+                if ose == errno.EEXIST:
+                    pass  # different processes might try to create the same directory at _just_ the same time causing the previous check to fail
+        temp_path = os.path.join(bqueryd.INCOMING, ticket, blob_name)
+
+        if os.path.exists(temp_path):
+            self.logger.info("%s exists, skipping download" % temp_path)
+            self.file_downloader_progress(ticket, fileurl, 'DONE')
+        else:
+            self.logger.info(
+                "Downloading ticket [%s], container name [%s], blob name [%s]" % (ticket, container_name, blob_name))
+
+            # Download blob
+            try:
+                fd, tmp_filename = tempfile.mkstemp(dir=bqueryd.INCOMING)
+                blob_client = BlobClient.from_connection_string(
+                    conn_str=self.azure_conn_string, container_name=container_name, blob_name=blob_name
+                )
+                download_stream = blob_client.download_blob()
+                with open(tmp_filename, 'wb') as fh:
+                    fh.write(download_stream.content_as_bytes(max_concurrency=1))
+
+                self._unzip_tmp_file(temp_path, tmp_filename)
+            finally:
+                if os.path.exists(tmp_filename):
+                    os.remove(tmp_filename)
+                os.close(fd)
+
+            self.logger.debug('Download done %s azure://%s/%s', ticket, container_name, blob_name)
+            self.file_downloader_progress(ticket, fileurl, 'DONE')
 
     def remove_ticket(self, ticket):
         # Remove all Redis entries for this node and ticket
