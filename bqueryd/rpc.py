@@ -12,7 +12,7 @@ import redis
 import zmq
 
 import bqueryd
-from messages import msg_factory, RPCMessage, ErrorMessage
+from bqueryd.messages import msg_factory, RPCMessage, ErrorMessage
 
 try:
     from cStringIO import StringIO
@@ -21,7 +21,7 @@ except ImportError:
 import glob
 import pandas as pd
 from bquery import ctable
-from tool import rm_file_or_dir
+from bqueryd.tool import rm_file_or_dir
 
 
 class RPCError(Exception):

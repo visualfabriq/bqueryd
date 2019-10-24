@@ -12,10 +12,10 @@ import redis
 import zmq
 
 import bqueryd
-from messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, \
+from bqueryd.messages import msg_factory, Message, WorkerRegisterMessage, ErrorMessage, \
     BusyMessage, DoneMessage, StopMessage, TicketDoneMessage
-from tool import rm_file_or_dir
-from util import get_my_ip, bind_to_random_port
+from bqueryd.tool import rm_file_or_dir
+from bqueryd.util import get_my_ip, bind_to_random_port
 
 POLLING_TIMEOUT = 500  # timeout in ms : how long to wait for network poll, this also affects frequency of seeing new nodes
 DEAD_WORKER_TIMEOUT = 60  # time in seconds that we wait for a worker to respond before being removed
