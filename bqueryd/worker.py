@@ -170,7 +170,7 @@ class WorkerBase(object):
 
         try:
             tmp = self.handle(msg)
-        except Exception as e:
+        except Exception:
             tmp = ErrorMessage(msg)
             tmp['payload'] = traceback.format_exc()
             self.logger.exception("Unable to handle message [%s]", msg)
