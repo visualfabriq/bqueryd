@@ -21,7 +21,7 @@ import time
 import traceback
 import zipfile
 import zmq
-from azure.storage.blob.blob_client import BlobClient
+from azure.storage.blob import BlobClient
 from ssl import SSLError
 
 import bqueryd
