@@ -75,7 +75,7 @@ install_requires = [
     'netifaces>=0.10.9',
     'configobj>=5.0.6',
     'psutil>=5.0.0',
-    'azure-storage-blob==12.0.0b4',
+    'azure-storage-blob==12.0.0',
 ]
 setup_requires = []
 tests_requires = [
