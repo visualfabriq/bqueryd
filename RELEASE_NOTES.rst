@@ -1,3 +1,7 @@
+Release 0.3.6
+=======================
+- Ensure uncompressing temporary files are deleted if there is an error uncompressing.
+
 Release 0.3.5
 =======================
 - Added functionality for downloading files from Azure Blob Storage.
@@ -9,8 +13,7 @@ Release 0.3.4
 Release 0.3.3
 =======================
 - Fix hardcoded version string in ``bqueryd.__init__``.
-- Round robin over all available workers (both local and remote) in the controller unless
-"needs_local" is specified.
+- Round robin over all available workers (both local and remote) in the controller unless "needs_local" is specified.
 
 Release 0.3.2
 =======================
