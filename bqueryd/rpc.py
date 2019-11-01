@@ -132,47 +132,49 @@ class RPC(object):
         return _rpc
 
     def uncompress_groupby_to_df(self, result_tar, groupby_col_list, agg_list, where_terms_list, aggregate=False):
-        # uncompress result retured by the groupby and convert it to a Pandas DataFrame
+        # uncompress result returned by the groupby and convert it to a Pandas DataFrame
+        tmp_dir = None
         try:
-            tar_file = TarFile(fileobj=StringIO(result_tar))
-            tmp_dir = tempfile.mkdtemp(prefix='tar_dir_')
-            tar_file.extractall(tmp_dir)
-        except TarError:
-            self.logger.exception("Could not create/extract tar.")
-            raise ValueError(result_tar)
-        del result_tar
-        del tar_file
+            try:
+                tar_file = TarFile(fileobj=StringIO(result_tar))
+                tmp_dir = tempfile.mkdtemp(prefix='tar_dir_')
+                tar_file.extractall(tmp_dir)
+            except TarError:
+                self.logger.exception("Could not create/extract tar.")
+                raise ValueError(result_tar)
+            del result_tar
+            del tar_file
 
-        ct = None
+            ct = None
 
-        # now untar and aggregate the individual shard results
-        for i, sub_tar in enumerate(glob.glob(os.path.join(tmp_dir, '*'))):
-            new_dir = os.path.join(tmp_dir, 'bcolz_' + str(i))
-            rm_file_or_dir(new_dir)
-            with tarfile.open(sub_tar, mode='r') as tar_file:
-                tar_file.extractall(new_dir)
-            # rm_file_or_dir(sub_tar)
-            ctable_dir = glob.glob(os.path.join(new_dir, '*'))[0]
-            new_ct = ctable(rootdir=ctable_dir, mode='a')
-            if i == 0:
-                ct = new_ct
+            # now untar and aggregate the individual shard results
+            for i, sub_tar in enumerate(glob.glob(os.path.join(tmp_dir, '*'))):
+                new_dir = os.path.join(tmp_dir, 'bcolz_' + str(i))
+                rm_file_or_dir(new_dir)
+                with tarfile.open(sub_tar, mode='r') as tar_file:
+                    tar_file.extractall(new_dir)
+                # rm_file_or_dir(sub_tar)
+                ctable_dir = glob.glob(os.path.join(new_dir, '*'))[0]
+                new_ct = ctable(rootdir=ctable_dir, mode='a')
+                if i == 0:
+                    ct = new_ct
+                else:
+                    ct.append(new_ct)
+
+            # aggregate by groupby parameters
+            if ct is None:
+                result_df = pd.DataFrame()
+            elif aggregate:
+                new_dir = os.path.join(tmp_dir, 'end_result')
+                rm_file_or_dir(new_dir)
+                # we can only sum now
+                new_agg_list = [[x[2], 'sum', x[2]] for x in agg_list]
+                result_ctable = ct.groupby(groupby_col_list, new_agg_list, rootdir=new_dir)
+                result_df = result_ctable.todataframe()
             else:
-                ct.append(new_ct)
-
-        # aggregate by groupby parameters
-        if ct is None:
-            result_df = pd.DataFrame()
-        elif aggregate:
-            new_dir = os.path.join(tmp_dir, 'end_result')
-            rm_file_or_dir(new_dir)
-            # we can only sum now
-            new_agg_list = [[x[2], 'sum', x[2]] for x in agg_list]
-            result_ctable = ct.groupby(groupby_col_list, new_agg_list, rootdir=new_dir)
-            result_df = result_ctable.todataframe()
-        else:
-            result_df = ct.todataframe()
-
-        rm_file_or_dir(tmp_dir)
+                result_df = ct.todataframe()
+        finally:
+            rm_file_or_dir(tmp_dir)
 
         return result_df
 
