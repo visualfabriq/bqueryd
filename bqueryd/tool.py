@@ -14,7 +14,7 @@ def mkdir_p(path):
 
 
 def rm_file_or_dir(path):
-    if os.path.exists(path):
+    if path is not None and os.path.exists(path):
         if os.path.isdir(path):
             if os.path.islink(path):
                 os.unlink(path)
