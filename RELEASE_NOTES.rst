@@ -1,6 +1,6 @@
 Release 0.3.7
 =======================
-- Update ``smart_open`` requirements.
+- Update minimum requirements.
 
 Release 0.3.6
 =======================
