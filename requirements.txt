@@ -1,9 +1,9 @@
 bquery>=0.2.10
-pyzmq>=16.0.2
-redis>=2.10.5
-boto>=2.43.0
+pyzmq>=17.1.2
+redis>=3.0.1
+boto3>=1.9.82
 smart_open>=1.9.0
-netifaces>=0.10.5
+netifaces>=0.10.9
 configobj>=5.0.6
 psutil>=5.0.0
 pandas>=0.23.1

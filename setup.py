@@ -79,7 +79,7 @@ install_requires = [
 ]
 setup_requires = []
 tests_requires = [
-    'pandas>=0.23.0',
+    'pandas>=0.23.1',
     'pytest>=4.0.0',
     'pytest-cov>=2.6.0',
     'codacy-coverage>=1.3.7',
