@@ -1,3 +1,7 @@
+Release 0.3.7
+=======================
+- Update minimum requirements.
+
 Release 0.3.6
 =======================
 - Ensure uncompressing temporary files are deleted if there is an error uncompressing.
