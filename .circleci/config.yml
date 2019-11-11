@@ -1,0 +1,40 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: circleci/python:2.7
+
+    working_directory: ~/PycharmProjects
+    steps:
+      - checkout:
+          path: ~/PycharmProjects/bqueryd
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          name: Check docker-compose version
+          command: |
+            docker -v
+            docker-compose -v
+      - run:
+          name: Build Services
+          working_directory: bqueryd
+          command: |
+            docker-compose -f docker-compose.yml build
+      - run:
+          name: Run Tests
+          working_directory: bqueryd
+          command: docker-compose -f docker-compose.yml run bqueryd pytest -vs tests --junitxml=test-results/pytest/pytest-report.xml --cov-report xml:test-results/pytest-cov/coverage.xml --cov=bqueryd
+#     - name: Upload Coverage
+#         command: python-codacy-coverage -r test-results/pytest-cov/coverage.xml
+#         working_directory: bqueryd
+      - store_test_results:
+          path: bqueryd/test-results
+      - store_artifacts:
+          path: bqueryd/test-results
+          destination: tr1
+
+workflows:
+  version: 2
+  build-and-test:
+    jobs:
+      - build

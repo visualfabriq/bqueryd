@@ -1,6 +1,7 @@
-__version__ = 0.9
 import logging
 import os
+from version import __version__
+
 
 logger = logging.getLogger('bqueryd')
 ch = logging.StreamHandler()

@@ -45,8 +45,11 @@ def read(*parts):
 
 
 def get_version():
-    with codecs.open(abspath('VERSION'), "r", "utf-8") as f:
-        return f.readline().rstrip('\n')
+    version = {}
+    with open("bqueryd/version.py") as fp:
+        exec (fp.read(), version)
+    return version
+
 
 # Sources & libraries
 inc_dirs = [abspath('bqueryd')]
@@ -68,12 +71,19 @@ install_requires = [
     'pyzmq>=17.1.2',
     'redis>=3.0.1',
     'boto3>=1.9.82',
-    'smart_open>=1.8.0',
+    'smart_open>=1.9.0',
     'netifaces>=0.10.9',
-    'configobj>=5.0.6'
+    'configobj>=5.0.6',
+    'psutil>=5.0.0',
+    'azure-storage-blob==12.0.0',
 ]
 setup_requires = []
-tests_requires = []
+tests_requires = [
+    'pandas>=0.23.1',
+    'pytest>=4.0.0',
+    'pytest-cov>=2.6.0',
+    'codacy-coverage>=1.3.7',
+]
 extras_requires = []
 ext_modules = []
 package_data = {}
@@ -97,9 +107,10 @@ classifiers = [
 
 setup(
     name="bqueryd",
-    version=get_version(),
+    version=get_version()['__version__'],
     description='A distribution framework for Bquery',
     long_description=read("README.md"),
+    long_description_content_type='text/markdown',
     classifiers=classifiers,
     author='Carst Vaartjes',
     author_email='cvaartjes@visualfabriq.com',

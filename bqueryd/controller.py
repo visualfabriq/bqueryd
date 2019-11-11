@@ -25,7 +25,7 @@ RUNFILES_LOCATION = '/srv/'  # Location to write a .pid and .address file
 
 
 class ControllerNode(object):
-    def __init__(self, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO):
+    def __init__(self, redis_url='redis://127.0.0.1:6379/0', loglevel=logging.INFO, azure_conn_string=None):
 
         self.redis_url = redis_url
         self.redis_server = redis.from_url(redis_url)
@@ -59,6 +59,7 @@ class ControllerNode(object):
         self.last_heartbeat = 0
         self.others = {}  # A dict of other Controllers running on other DQE nodes
         self.start_time = time.time()
+        self.azure_conn_string = azure_conn_string
 
     def send(self, addr, msg_buf, is_rpc=False):
         try:
@@ -82,7 +83,7 @@ class ControllerNode(object):
         # Connect to new other controllers we don't know about yet
         for x in all_servers:
             if x not in self.others:
-                self.logger.debug('Connecting to %s' % x)
+                self.logger.info('Connecting to %s', x)
                 self.socket.connect(x)
                 self.others[x] = {'connect_time': time.time()}
             else:
@@ -133,12 +134,13 @@ class ControllerNode(object):
         # if there are no free workers at all, just bail
         if not free_workers:
             return None
-        # and if needs local and there are none, same thing
-        if needs_local and not free_local_workers:
-            return None
-        # give priority to local workers if there are free ones
-        if free_local_workers:
-            return random.choice(free_local_workers)
+
+        if needs_local:
+            if free_local_workers:
+                return random.choice(free_local_workers)
+            else:
+                return None
+
         return random.choice(free_workers)
 
     def process_sink_results(self):
@@ -318,7 +320,7 @@ class ControllerNode(object):
         self.worker_map.setdefault(worker_id, {})['last_seen'] = time.time()
 
         if msg.isa(WorkerRegisterMessage):
-            # self.logger.debug('Worker registered %s' % worker_id)
+            self.logger.debug('Worker registered %s', worker_id)
             for filename in msg.get('data_files', []):
                 self.files_map.setdefault(filename, set()).add(worker_id)
             self.worker_map[worker_id]['node'] = msg.get('node', '...')
@@ -328,12 +330,12 @@ class ControllerNode(object):
             return
 
         if msg.isa(BusyMessage):
-            # self.logger.debug('Worker %s sent BusyMessage' % worker_id)
+            self.logger.debug('Worker %s sent BusyMessage', worker_id)
             self.worker_map[worker_id]['busy'] = True
             return
 
         if msg.isa(DoneMessage):
-            # self.logger.debug('Worker %s sent DoneMessage' % worker_id)
+            self.logger.debug('Worker %s sent DoneMessage', worker_id)
             self.worker_map[worker_id]['busy'] = False
             return
 
@@ -438,8 +440,11 @@ class ControllerNode(object):
         if not (filenames and bucket):
             return "A download needs kwargs: (filenames=, bucket=)"
 
-        # Turn filenames into s3 URLs
-        filenames = ['s3://%s/%s' % (bucket, filename) for filename in filenames]
+        # Turn filenames into URLs
+        if self.azure_conn_string:
+            filenames = ['azure://%s/%s' % (bucket, filename) for filename in filenames]
+        else:
+            filenames = ['s3://%s/%s' % (bucket, filename) for filename in filenames]
 
         ticket = binascii.hexlify(os.urandom(8))  # track all downloads using a ticket
         for filename in filenames:
@@ -533,7 +538,7 @@ class ControllerNode(object):
         return data
 
     def remove_worker(self, worker_id):
-        self.logger.debug("Removing worker %s" % worker_id)
+        self.logger.warning("Removing worker %s", worker_id)
         if worker_id in self.worker_map:
             del self.worker_map[worker_id]
         for worker_set in self.files_map.values():
