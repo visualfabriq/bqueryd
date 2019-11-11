@@ -1,3 +1,7 @@
+Release 0.3.8
+=======================
+- Fix download error with unzipping ubication.
+
 Release 0.3.7
 =======================
 - Update minimum requirements.
