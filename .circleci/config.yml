@@ -21,6 +21,9 @@ jobs:
           command: |
             docker-compose -f docker-compose.yml up --build -d
       - run:
+          name: Sleep 30 seconds waiting for localstack service building
+          command: sleep 30
+      - run:
           name: Run Tests
           working_directory: bqueryd
           command: docker-compose -f docker-compose.yml run bqueryd pytest -vs tests --junitxml=test-results/pytest/pytest-report.xml --cov-report xml:test-results/pytest-cov/coverage.xml --cov=bqueryd
@@ -54,15 +57,15 @@ jobs:
 
 workflows:
   version: 2
-  build-and-test:
+  build-and-release:
     jobs:
-      - build
-      # Release only when are going to put a new tag
+      - build:
+          filters:
+            tags:
+              only: /[0-9]+(\.[0-9]+)*/
       - pypi_release:
           requires:
             - build
           filters:
             tags:
               only: /[0-9]+(\.[0-9]+)*/
-            branches:
-              ignore: /.*/
