@@ -16,18 +16,18 @@ jobs:
             docker -v
             docker-compose -v
       - run:
-          name: Build Services
+          name: Start Services
           working_directory: bqueryd
           command: |
-            docker-compose -f docker-compose.yml build
-      - run:
-          name: Sleep 30 seconds system for finishing services building
-          command: |
-            sleep 30
+            docker-compose -f docker-compose.yml up --build -d
       - run:
           name: Run Tests
           working_directory: bqueryd
           command: docker-compose -f docker-compose.yml run bqueryd pytest -vs tests --junitxml=test-results/pytest/pytest-report.xml --cov-report xml:test-results/pytest-cov/coverage.xml --cov=bqueryd
+      - run:
+          name: Stop Services
+          command: docker-compose down
+          working_directory: bqueryd
 #     - name: Upload Coverage
 #         command: python-codacy-coverage -r test-results/pytest-cov/coverage.xml
 #         working_directory: bqueryd
