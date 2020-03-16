@@ -32,9 +32,33 @@ jobs:
       - store_artifacts:
           path: bqueryd/test-results
           destination: tr1
+  
+  pypi_release:
+    docker:
+      - image: circleci/python:3.7
+    steps:
+      - checkout
+      - run:
+          name: Install Twine
+          command: sudo pip install twine
+      - run:
+          name: Package Project
+          command: sudo python setup.py sdist bdist_wheel
+      - run:
+          name: Upload to Pypi
+          command: sudo twine upload -u ${PYPI_USERNAME} -p ${PYPI_PASSWORD} dist/*  
 
 workflows:
   version: 2
   build-and-test:
     jobs:
       - build
+      # Release only when are going to put a new tag
+      - pypi_release:
+          requires:
+            - build
+          filters:
+            tags:
+              only: /[0-9]+(\.[0-9]+)*/
+            branches:
+              ignore: /.*/

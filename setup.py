@@ -136,6 +136,6 @@ setup(
         'console_scripts': [
             'bqueryd = bqueryd.node:main'
         ]
-    },
+    }
 )
 
