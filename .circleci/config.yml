@@ -21,6 +21,9 @@ jobs:
           command: |
             docker-compose -f docker-compose.yml up --build -d
       - run:
+          name: Sleep 30 seconds waiting for localstack service building
+          command: sleep 30
+      - run:
           name: Run Tests
           working_directory: bqueryd
           command: docker-compose -f docker-compose.yml run bqueryd pytest -vs tests --junitxml=test-results/pytest/pytest-report.xml --cov-report xml:test-results/pytest-cov/coverage.xml --cov=bqueryd
