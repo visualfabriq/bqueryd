@@ -21,6 +21,10 @@ jobs:
           command: |
             docker-compose -f docker-compose.yml build
       - run:
+          name: Sleep 30 seconds system for finishing services building
+          command: |
+            sleep 30
+      - run:
           name: Run Tests
           working_directory: bqueryd
           command: docker-compose -f docker-compose.yml run bqueryd pytest -vs tests --junitxml=test-results/pytest/pytest-report.xml --cov-report xml:test-results/pytest-cov/coverage.xml --cov=bqueryd
