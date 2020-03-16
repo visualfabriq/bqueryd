@@ -56,11 +56,10 @@ workflows:
   version: 2
   build-and-release:
     jobs:
-      - build
+      - build:
           filters:
             tags:
               only: /[0-9]+(\.[0-9]+)*/
-      # Release only when are going to put a new tag
       - pypi_release:
           requires:
             - build
