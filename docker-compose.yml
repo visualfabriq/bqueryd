@@ -21,7 +21,7 @@ services:
     build:
       network: host
       context: .
-      dockerfile: dockerFile
+      dockerfile: DockerFile
     depends_on:
       - redis
       - localstack
