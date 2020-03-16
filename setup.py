@@ -77,7 +77,7 @@ install_requires = [
     'psutil>=5.0.0',
     'azure-storage-blob==12.0.0',
 ]
-setup_requires = ['pbr', 'pytest-runner']
+setup_requires = []
 tests_requires = [
     'pandas>=0.23.1',
     'pytest>=4.0.0',
@@ -136,7 +136,6 @@ setup(
         'console_scripts': [
             'bqueryd = bqueryd.node:main'
         ]
-    },
-    pbr=True
+    }
 )
 
