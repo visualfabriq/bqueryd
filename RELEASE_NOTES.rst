@@ -1,3 +1,7 @@
+Release 0.3.9
+=======================
+- Setting up CircleCI workflows
+
 Release 0.3.8
 =======================
 - Fix download error with unzipping ubication.
