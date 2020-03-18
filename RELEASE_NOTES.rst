@@ -1,3 +1,7 @@
+Release 0.3.10
+=======================
+- Fixing unzipping error in downloader node
+
 Release 0.3.9
 =======================
 - Setting up CircleCI workflows
