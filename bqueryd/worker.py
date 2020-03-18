@@ -546,7 +546,7 @@ class DownloaderNode(WorkerBase):
                 with open(tmp_filename, 'wb') as fh:
                     fh.write(download_stream.content_as_bytes(max_concurrency=1))
 
-                self._unzip_tmp_file(os.path.dirname(temp_path), tmp_filename)
+                self._unzip_tmp_file(temp_path, tmp_filename)
             finally:
                 if os.path.exists(tmp_filename):
                     os.remove(tmp_filename)
