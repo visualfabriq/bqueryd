@@ -71,12 +71,15 @@ install_requires = [
     'pyzmq>=17.1.2',
     'redis>=3.0.1',
     'boto3>=1.9.82',
-    'smart_open>=1.9.0',
     'netifaces>=0.10.9',
     'configobj>=5.0.6',
     'psutil>=5.0.0',
-    'azure-storage-blob==12.0.0',
+    'azure-storage-blob~=12.3.2',
 ]
+if v < (3,):
+    install_requires.extend(['smart_open==1.10.1'])
+else:
+    install_requires.extend(['smart_open>=1.11.1'])
 setup_requires = []
 tests_requires = [
     'pandas>=0.23.1',
@@ -138,4 +141,3 @@ setup(
         ]
     }
 )
-
